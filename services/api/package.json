@@ -1,0 +1,47 @@
+{
+  "name": "@qari/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "drizzle:generate": "drizzle-kit generate",
+    "drizzle:migrate": "tsx src/db/migrate.ts",
+    "content:import": "tsx src/content-import/cli.ts import",
+    "content:approve": "tsx src/content-import/cli.ts approve",
+    "content:seed-mvp-passages": "tsx src/content-import/seedMvpPassagesCli.ts",
+    "content:seed-placeholder-audio": "tsx src/content-import/seedPlaceholderReciterAudioCli.ts",
+    "content:audio-manifest": "tsx src/content-import/audioManifestCli.ts"
+  },
+  "dependencies": {
+    "@qari/config": "workspace:*",
+    "@qari/content-schema": "workspace:*",
+    "@qari/domain": "workspace:*",
+    "@fastify/rate-limit": "^10.1.1",
+    "bullmq": "^5.34.4",
+    "drizzle-orm": "^0.36.4",
+    "fastify": "^5.1.0",
+    "ioredis": "5.10.1",
+    "jsonwebtoken": "^9.0.2",
+    "pino": "^9.5.0",
+    "postgres": "^3.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^8.13.0",
+    "@typescript-eslint/parser": "^8.13.0",
+    "@vitest/coverage-v8": "^2.1.4",
+    "drizzle-kit": "^0.28.1",
+    "eslint": "^8.57.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

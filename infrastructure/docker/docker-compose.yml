@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: qari
+      POSTGRES_PASSWORD: qari
+      POSTGRES_DB: qari
+    ports:
+      - "5432:5432"
+    volumes:
+      - qari_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qari -d qari"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # S3-compatible object storage stand-in for local dev (ADR-004: private
+  # bucket, signed URLs). Not used in production — production uses a real
+  # S3-compatible provider, chosen in a future infra ADR.
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: qari-dev
+      MINIO_ROOT_PASSWORD: qari-dev-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - qari_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  qari_postgres_data:
+  qari_minio_data:

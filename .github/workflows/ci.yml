@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    name: Node workspace (lint, typecheck, test, build)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: qari
+          POSTGRES_PASSWORD: qari
+          POSTGRES_DB: qari
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qari -d qari"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm via corepack
+        run: corepack enable && corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Validate OpenAPI contract
+        run: pnpm --filter @qari/api-contracts lint
+
+      - name: Expo prebuild check (mobile)
+        working-directory: apps/mobile
+        run: npx expo-doctor || npx expo config --type introspect
+
+      - name: Drizzle migration dry-run
+        working-directory: services/api
+        env:
+          DATABASE_URL: postgres://qari:qari@localhost:5432/qari
+          REDIS_URL: redis://localhost:6379
+          OBJECT_STORAGE_ENDPOINT: http://localhost:9000
+          OBJECT_STORAGE_BUCKET: qari-audio-ci
+          OBJECT_STORAGE_ACCESS_KEY_ID: ci
+          OBJECT_STORAGE_SECRET_ACCESS_KEY: ci-secret-value
+          JWT_SECRET: ci-only-not-a-real-secret
+        run: pnpm drizzle:migrate
+
+  inference:
+    name: Inference service (ruff, mypy, pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/inference
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Typecheck (mypy)
+        run: mypy app
+
+      - name: Test (pytest)
+        run: pytest -q

@@ -1,0 +1,23 @@
+{
+  "name": "qari-ai",
+  "private": true,
+  "version": "0.0.0",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.15.9",
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "content:import": "pnpm --filter @qari/api run content:import --",
+    "content:approve": "pnpm --filter @qari/api run content:approve --",
+    "content:audio-manifest": "pnpm --filter @qari/api run content:audio-manifest --"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.3"
+  }
+}

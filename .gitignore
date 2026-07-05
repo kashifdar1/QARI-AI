@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.turbo/
+*.log
+.env
+.env.local
+.env.development
+.env.staging
+.env.production
+!.env.example
+.DS_Store
+coverage/
+.expo/
+__pycache__/
+*.pyc
+.venv/

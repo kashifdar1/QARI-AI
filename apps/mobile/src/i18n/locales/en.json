@@ -1,0 +1,33 @@
+{
+  "common": {
+    "back": "Back",
+    "next": "Next",
+    "continue": "Continue",
+    "retry": "Retry"
+  },
+  "onboarding": {
+    "welcome": {
+      "title": "Welcome to Qari AI",
+      "subtitle": "Practice Quran recitation with gentle, evidence-based feedback."
+    },
+    "languageSelect": {
+      "title": "Choose your language",
+      "prompt": "You can change this later in Settings."
+    },
+    "profileType": {
+      "title": "Who is practicing?",
+      "adult": "An adult",
+      "child": "A child (guardian-managed)"
+    },
+    "consent": {
+      "title": "Before you start",
+      "body": "AI feedback can be uncertain and does not replace a qualified teacher. We'll always tell you how confident we are, and we'll never label something as a mistake unless we're sure."
+    }
+  },
+  "tabs": {
+    "home": { "title": "Home", "empty": "Your practice plan will appear here once content is available." },
+    "library": { "title": "Library", "empty": "Passages will appear here once content is imported." },
+    "progress": { "title": "Progress", "empty": "Your progress will appear here after your first practice session." },
+    "settings": { "title": "Settings", "empty": "Account and language settings." }
+  }
+}

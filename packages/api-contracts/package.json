@@ -1,0 +1,14 @@
+{
+  "name": "@qari/api-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'no build step: openapi.yaml is the artifact'",
+    "lint": "redocly lint openapi.yaml",
+    "typecheck": "echo 'no typecheck: no TS sources in this package'",
+    "test": "redocly lint openapi.yaml"
+  },
+  "devDependencies": {
+    "@redocly/cli": "^1.25.11"
+  }
+}

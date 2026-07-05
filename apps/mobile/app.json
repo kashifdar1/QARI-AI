@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Qari AI",
+    "slug": "qari-ai",
+    "scheme": "qariai",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-audio"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.qariai.app"
+    },
+    "android": {
+      "package": "com.qariai.app"
+    },
+    "extra": {
+      "note": "Development build (dev client) required — not Expo Go — for native audio modules per CLAUDE.md §3."
+    }
+  }
+}

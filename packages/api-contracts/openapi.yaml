@@ -1,0 +1,1085 @@
+openapi: 3.0.3
+info:
+  title: Qari AI API
+  version: "1.0.0"
+  description: >
+    Companion Qari backend API. Declared riwayah is Hafs 'an 'Asim (see
+    CLAUDE.md and ADR-003). Machine feedback is always mediated by the
+    confidence-tier policy (ADR-005); this contract never exposes raw model
+    scores to clients.
+servers:
+  - url: https://api.qari.app/v1
+    description: Production
+  - url: http://localhost:3000/v1
+    description: Local development
+
+tags:
+  - name: auth
+  - name: sessions
+  - name: attempts
+  - name: evaluation
+  - name: content
+  - name: progress
+  - name: consent
+  - name: privacy
+  - name: teacher-review
+
+paths:
+  /auth/signup:
+    post:
+      tags: [auth]
+      summary: Create a new guardian account
+      operationId: signup
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in with email + password
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/guest-upgrade:
+    post:
+      tags: [auth]
+      summary: Upgrade an anonymous guest session to a full guardian account
+      description: >
+        Preserves guest-created child profiles and their progress, attaching
+        them to the newly created guardian account.
+      operationId: upgradeGuestAccount
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuestUpgradeRequest'
+      responses:
+        '200':
+          description: Guest session upgraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/guest-session:
+    post:
+      tags: [auth]
+      summary: Issue an anonymous guest session
+      description: >
+        Creates a real, minimal account row (flagged guest) so profiles
+        created during the guest session have a valid owner from the start;
+        no email/password is collected until guest-upgrade.
+      operationId: createGuestSession
+      security: []
+      responses:
+        '201':
+          description: Guest session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSession'
+
+  /sessions:
+    post:
+      tags: [sessions]
+      summary: Start a practice session for a profile
+      operationId: createPracticeSession
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PracticeSession'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags: [sessions]
+      summary: List practice sessions for the authenticated guardian's profiles
+      operationId: listPracticeSessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProfileIdQuery'
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: A page of sessions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PracticeSessionPage'
+
+  /sessions/{sessionId}/attempts:
+    post:
+      tags: [attempts]
+      summary: Create (or idempotently replay) an attempt within a session
+      description: >
+        Attempt creation is idempotent: the same Idempotency-Key (or client
+        attempt UUID in the body) returns the original attempt rather than
+        creating a duplicate.
+      operationId: createAttempt
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAttemptRequest'
+      responses:
+        '201':
+          description: Attempt created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attempt'
+        '200':
+          description: Idempotent replay — existing attempt returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attempt'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /attempts/{attemptId}/upload-url:
+    post:
+      tags: [attempts]
+      summary: Get a short-lived signed URL to upload the attempt's audio
+      description: >
+        Server never logs the returned URL. Client uploads a 16kHz mono
+        16-bit PCM WAV directly to object storage, then calls
+        /attempts/{attemptId}/complete.
+      operationId: createAttemptUploadUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUploadUrlRequest'
+      responses:
+        '200':
+          description: Signed upload URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedUploadUrl'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attempts/{attemptId}/complete:
+    post:
+      tags: [attempts]
+      summary: Confirm upload completion and enqueue evaluation
+      operationId: completeAttempt
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: Accepted; evaluation job enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attempt'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Attempt is not in an uploadable state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /attempts/{attemptId}:
+    get:
+      tags: [attempts]
+      summary: Get an attempt
+      operationId: getAttempt
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The attempt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Attempt'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attempts/{attemptId}/evaluation:
+    get:
+      tags: [evaluation]
+      summary: Get evaluation job status for an attempt
+      operationId: getEvaluationStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Evaluation job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationJobStatus'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attempts/{attemptId}/result:
+    get:
+      tags: [evaluation]
+      summary: Get the raw evaluation result (internal fields; word segments)
+      operationId: getEvaluationResult
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /attempts/{attemptId}/feedback:
+    get:
+      tags: [evaluation]
+      summary: Get the user-facing feedback report for an attempt
+      description: >
+        Produced exclusively by the confidence-tier feedback policy layer
+        (ADR-005, CLAUDE.md Principle 2). Never includes raw model scores;
+        only tier-labeled, evidence-backed feedback items or abstentions.
+      operationId: getFeedbackReport
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Feedback report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedbackReport'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /content/passages:
+    get:
+      tags: [content]
+      summary: List available passages for the current content version
+      operationId: listPassages
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: surahNumber
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 114
+        - $ref: '#/components/parameters/PageCursor'
+      responses:
+        '200':
+          description: A page of passages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PassagePage'
+
+  /content/passages/{passageId}:
+    get:
+      tags: [content]
+      summary: Get a single passage, including reference audio and word timings
+      operationId: getPassage
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: passageId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The passage
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PassageDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /profiles/{profileId}/progress:
+    get:
+      tags: [progress]
+      summary: Get aggregated progress for a profile
+      operationId: getProfileProgress
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: profileId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Progress aggregate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgressAggregate'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /consent:
+    get:
+      tags: [consent]
+      summary: List consent records for the authenticated guardian's profiles
+      operationId: listConsent
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ProfileIdQuery'
+      responses:
+        '200':
+          description: Consent records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ConsentRecord'
+    post:
+      tags: [consent]
+      summary: Grant consent for a specific purpose
+      operationId: grantConsent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GrantConsentRequest'
+      responses:
+        '201':
+          description: Consent granted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentRecord'
+
+  /consent/{consentId}/revoke:
+    post:
+      tags: [consent]
+      summary: Revoke a previously granted consent
+      operationId: revokeConsent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: consentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Consent revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConsentRecord'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /privacy/export:
+    post:
+      tags: [privacy]
+      summary: Request a full data export for the authenticated guardian and their profiles
+      operationId: requestDataExport
+      security:
+        - bearerAuth: []
+      responses:
+        '202':
+          description: Export job accepted; delivered via signed download link out-of-band
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataExportJob'
+
+  /privacy/delete:
+    post:
+      tags: [privacy]
+      summary: Request deletion of the authenticated guardian's account and profiles
+      operationId: requestDataDeletion
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataDeletionRequest'
+      responses:
+        '202':
+          description: Deletion job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataDeletionJob'
+
+  /teacher-review/{attemptId}:
+    get:
+      tags: [teacher-review]
+      summary: (Reserved, post-MVP) Get teacher review status for an attempt
+      description: >
+        Namespace reserved per CLAUDE.md Principle 4 (AI does not replace a
+        teacher). Not implemented until the teacher portal milestone; the
+        `teacherReviewAvailable` flag on Attempt indicates whether this
+        endpoint is currently live for a given attempt.
+      operationId: getTeacherReview
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Teacher review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TeacherReview'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          description: Teacher review is not yet available for this deployment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+    ProfileIdQuery:
+      name: profileId
+      in: query
+      schema:
+        type: string
+        format: uuid
+    PageCursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated, but not authorized for this resource (object-level check failed)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflicting resource state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+
+    SignupRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 10
+        locale:
+          type: string
+          enum: [en, ur, ar]
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    GuestUpgradeRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 10
+
+    AuthSession:
+      type: object
+      required: [accessToken, refreshToken, userId]
+      properties:
+        accessToken:
+          type: string
+        refreshToken:
+          type: string
+        userId:
+          type: string
+          format: uuid
+
+    CreateSessionRequest:
+      type: object
+      required: [profileId, passageId]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        passageId:
+          type: string
+          format: uuid
+
+    PracticeSession:
+      type: object
+      required: [id, profileId, passageId, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        profileId:
+          type: string
+          format: uuid
+        passageId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    PracticeSessionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PracticeSession'
+        nextCursor:
+          type: string
+          nullable: true
+
+    CreateAttemptRequest:
+      type: object
+      required: [clientAttemptId]
+      properties:
+        clientAttemptId:
+          type: string
+          format: uuid
+          description: Client-generated UUID; part of the idempotency key alongside the header.
+
+    Attempt:
+      type: object
+      required: [id, sessionId, status, retentionState, teacherReviewAvailable, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - ready
+            - uploading
+            - queued
+            - processing
+            - completed
+            - needs_rerecord
+            - failed
+        retentionState:
+          type: string
+          enum: [active, pending_deletion, deleted]
+          description: Mirrors the recorder/retention job lifecycle (CLAUDE.md §6, Principle 6).
+        teacherReviewAvailable:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateUploadUrlRequest:
+      type: object
+      required: [contentType, sizeBytes]
+      properties:
+        contentType:
+          type: string
+          enum: [audio/wav]
+        sizeBytes:
+          type: integer
+          minimum: 1
+
+    SignedUploadUrl:
+      type: object
+      required: [url, expiresAt, objectKey]
+      properties:
+        url:
+          type: string
+          format: uri
+        expiresAt:
+          type: string
+          format: date-time
+        objectKey:
+          type: string
+
+    EvaluationJobStatus:
+      type: object
+      required: [attemptId, status]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        modelBundleVersion:
+          type: string
+        contentVersionId:
+          type: string
+          format: uuid
+
+    EvaluationResult:
+      type: object
+      required: [attemptId, modelBundleVersion, contentVersionId, wordSegments]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+        modelBundleVersion:
+          type: string
+        contentVersionId:
+          type: string
+          format: uuid
+        wordSegments:
+          type: array
+          items:
+            $ref: '#/components/schemas/WordSegment'
+        issueCandidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/IssueCandidate'
+
+    WordSegment:
+      type: object
+      required: [wordIndex, startMs, endMs]
+      properties:
+        wordIndex:
+          type: integer
+        startMs:
+          type: integer
+        endMs:
+          type: integer
+
+    IssueCandidate:
+      type: object
+      required: [wordIndex, kind, modelConfidence]
+      properties:
+        wordIndex:
+          type: integer
+        kind:
+          type: string
+          enum: [omission, repetition, substitution]
+        modelConfidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: Internal only. Never returned by /feedback.
+
+    FeedbackReport:
+      type: object
+      required: [attemptId, items, generatedAt]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackItem'
+        generatedAt:
+          type: string
+          format: date-time
+
+    FeedbackItem:
+      type: object
+      required: [wordIndex, tier]
+      properties:
+        wordIndex:
+          type: integer
+        tier:
+          type: string
+          enum: [high, medium, low]
+          description: >
+            high = specific feedback with evidence; medium = "possible issue,
+            replay/retry"; low = abstain, never rendered as a labeled mistake
+            (ADR-005).
+        label:
+          type: string
+          enum: [omission, repetition, substitution]
+          nullable: true
+          description: Present only when tier is high or medium.
+        evidenceAudioUrl:
+          type: string
+          format: uri
+          nullable: true
+
+    PassagePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PassageSummary'
+        nextCursor:
+          type: string
+          nullable: true
+
+    PassageSummary:
+      type: object
+      required: [id, surahNumber, ayahStart, ayahEnd, riwayah]
+      properties:
+        id:
+          type: string
+          format: uuid
+        surahNumber:
+          type: integer
+        ayahStart:
+          type: integer
+        ayahEnd:
+          type: integer
+        riwayah:
+          type: string
+          enum: [hafs_an_asim]
+
+    PassageDetail:
+      allOf:
+        - $ref: '#/components/schemas/PassageSummary'
+        - type: object
+          required: [referenceAudioUrl, reciterId, ayahs, translation]
+          properties:
+            referenceAudioUrl:
+              type: string
+              format: uri
+              nullable: true
+              description: >
+                Null until a licensed reciter is cleared (docs/licenses/) —
+                see docs/STUBS.md. Never points at fabricated "recitation"
+                audio; a generated silent placeholder file if present.
+            ayahs:
+              type: array
+              items:
+                $ref: '#/components/schemas/PassageAyah'
+            translation:
+              $ref: '#/components/schemas/TranslationToggle'
+            reciterId:
+              type: string
+              nullable: true
+
+    PassageAyah:
+      type: object
+      required: [ayahNumber, words]
+      properties:
+        ayahNumber:
+          type: integer
+        words:
+          type: array
+          items:
+            $ref: '#/components/schemas/PassageWord'
+
+    PassageWord:
+      type: object
+      required: [wordIndex, displayText]
+      properties:
+        wordIndex:
+          type: integer
+        displayText:
+          type: string
+          description: Verbatim Uthmani text, diacritics/pause marks intact (docs/content-tokenization.md).
+
+    TranslationToggle:
+      type: object
+      required: [available]
+      description: >
+        Translation text is withheld until a translation source's license
+        is confirmed to permit this app's use (see docs/STUBS.md — Tanzil's
+        hosted translations are non-commercial-only by default).
+      properties:
+        available:
+          type: boolean
+        reason:
+          type: string
+          nullable: true
+        language:
+          type: string
+          enum: [en, ur]
+          nullable: true
+        sourceName:
+          type: string
+          nullable: true
+        text:
+          type: string
+          nullable: true
+
+    ProgressAggregate:
+      type: object
+      required: [profileId, passagesAttempted, streakDays]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        passagesAttempted:
+          type: integer
+        streakDays:
+          type: integer
+
+    GrantConsentRequest:
+      type: object
+      required: [profileId, purpose]
+      properties:
+        profileId:
+          type: string
+          format: uuid
+        purpose:
+          type: string
+          enum: [audio_model_training, audio_research, product_analytics]
+
+    ConsentRecord:
+      type: object
+      required: [id, profileId, purpose, status, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        profileId:
+          type: string
+          format: uuid
+        purpose:
+          type: string
+          enum: [audio_model_training, audio_research, product_analytics]
+        status:
+          type: string
+          enum: [granted, revoked]
+        updatedAt:
+          type: string
+          format: date-time
+
+    DataExportJob:
+      type: object
+      required: [id, status, requestedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        requestedAt:
+          type: string
+          format: date-time
+
+    DataDeletionRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: boolean
+          enum: [true]
+
+    DataDeletionJob:
+      type: object
+      required: [id, status, requestedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        requestedAt:
+          type: string
+          format: date-time
+
+    TeacherReview:
+      type: object
+      required: [attemptId, status]
+      properties:
+        attemptId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [not_requested, requested, in_review, completed]
+        teacherId:
+          type: string
+          format: uuid
+          nullable: true
+        note:
+          type: string
+          nullable: true

@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1783109691230,
+      "tag": "0000_needy_orphan",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783111556672,
+      "tag": "0001_add_users_is_guest",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783121273019,
+      "tag": "0002_content_words_and_translations",
+      "breakpoints": true
+    }
+  ]
+}
