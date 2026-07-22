@@ -22,6 +22,9 @@ import {
 } from './content-import/reciterAudioRepository.js';
 import { ApiError } from './errors.js';
 import { buildLoggerOptions } from './logging/logger.js';
+import { InMemoryProfileRepository, type ProfileRepository } from './sessions/profileRepository.js';
+import { InMemorySessionRepository, type SessionRepository } from './sessions/sessionRepository.js';
+import { registerSessionRoutes } from './sessions/routes.js';
 
 export type BuildAppOptions = {
   jwtSecret: string;
@@ -33,6 +36,8 @@ export type BuildAppOptions = {
   evaluationResultRepository?: EvaluationResultRepository;
   reportRepository?: ReportRepository;
   objectStorage?: ObjectStorage;
+  profileRepository?: ProfileRepository;
+  sessionRepository?: SessionRepository;
   publicObjectBaseUrl?: string;
   signedUrlTtlSeconds?: number;
   /** Test-only hook to capture emitted logs; production leaves this unset (stdout). */
@@ -92,12 +97,34 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   const evaluationResultRepository = options.evaluationResultRepository ?? new InMemoryEvaluationResultRepository();
   const reportRepository = options.reportRepository ?? new InMemoryReportRepository();
+  const contentRepository = options.contentRepository ?? new InMemoryContentRepository();
+  const profileRepository = options.profileRepository ?? new InMemoryProfileRepository();
+  const sessionRepository = options.sessionRepository ?? new InMemorySessionRepository();
+
   registerEvaluationRoutes(app, {
     attemptRepository,
     evaluationResultRepository,
     reportRepository,
     jwtSecret: options.jwtSecret,
     referenceAudioBaseUrl: options.publicObjectBaseUrl ?? 'https://content.qari.app',
+    // Real child-vs-adult resolution (ADR-005/Principle 5): without this,
+    // registerEvaluationRoutes' own default silently treats every profile
+    // as 'adult', which would give child profiles the less-strict abstention
+    // policy. attempt -> session -> profile, same ownership chain
+    // requireAttemptAccess already walks for authorization.
+    resolveProfileAgeClass: async (attemptId) => {
+      const ownership = await attemptRepository.findOwnershipForAttempt(attemptId);
+      if (!ownership) return 'adult';
+      const profile = await profileRepository.findById(ownership.profileId);
+      return profile?.profileType ?? 'adult';
+    },
+  });
+
+  registerSessionRoutes(app, {
+    profileRepository,
+    sessionRepository,
+    contentRepository,
+    jwtSecret: options.jwtSecret,
   });
 
   // Content is public-read (openapi.yaml: security: []). Rate limiting,
@@ -109,7 +136,6 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       timeWindow: '1 minute',
     });
 
-    const contentRepository = options.contentRepository ?? new InMemoryContentRepository();
     const reciterAudioRepository = options.reciterAudioRepository ?? new InMemoryReciterAudioRepository();
     const contentService = new ContentService(
       contentRepository,

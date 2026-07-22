@@ -28,3 +28,15 @@ export async function requestRecordingPermissionsAsync(): Promise<{ granted: boo
 export async function setAudioModeAsync(): Promise<void> {}
 
 export type RecordingOptions = Record<string, unknown>;
+
+export class MockAudioPlayer {
+  play(): void {}
+  pause(): void {}
+  release(): void {}
+}
+
+export type AudioPlayer = MockAudioPlayer;
+
+export function createAudioPlayer(): MockAudioPlayer {
+  return new MockAudioPlayer();
+}

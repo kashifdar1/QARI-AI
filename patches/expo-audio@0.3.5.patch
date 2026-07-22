@@ -1,0 +1,20 @@
+diff --git a/android/src/main/java/expo/modules/audio/AudioModule.kt b/android/src/main/java/expo/modules/audio/AudioModule.kt
+index 3badbf1bff5bba86cf1767d35d77c8c0980bef61..627c1d6de54080daa33551e16235577ac1067c36 100644
+--- a/android/src/main/java/expo/modules/audio/AudioModule.kt
++++ b/android/src/main/java/expo/modules/audio/AudioModule.kt
+@@ -332,7 +332,14 @@ class AudioModule : Module() {
+ 
+       Function("record") { ref: AudioRecorder ->
+         checkRecordingPermission()
+-        if (!ref.isPrepared) {
++        // Upstream bug (expo-audio 0.3.5): this condition was inverted
++        // (`if (!ref.isPrepared)`), so after a successful
++        // prepareToRecordAsync() (which sets isPrepared = true) this never
++        // called the real ref.record(), meaning MediaRecorder.start() was
++        // never invoked. isRecording stayed false forever, the output file
++        // stayed 0 bytes, and stop() later threw IllegalStateException
++        // (stop() on a MediaRecorder that was only prepared, never started).
++        if (ref.isPrepared) {
+           ref.record()
+         }
+       }

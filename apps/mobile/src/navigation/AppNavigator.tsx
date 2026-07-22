@@ -1,7 +1,13 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { View } from 'react-native';
-import { Button, IconButton, Text } from '@qari/ui';
+import { getInfoAsync } from 'expo-file-system';
+import { ErrorState, IconButton, Text } from '@qari/ui';
+import { AttemptsClient } from '../api/attemptsClient.js';
+import { AuthClient, type AuthSession } from '../api/authClient.js';
 import { ContentClient } from '../api/contentClient.js';
+import { SessionClient, type PracticeSession, type Profile } from '../api/sessionClient.js';
+import { uploadLocalFile } from '../api/uploadFile.js';
+import { generateUuidV4 } from '../api/uuid.js';
 import { ExpoAudioRecorder } from '../audio/expoAudioRecorder.js';
 import { useLocale } from '../i18n/LocaleContext.js';
 import { ConsentExplanation } from '../screens/onboarding/ConsentExplanation.js';
@@ -13,6 +19,8 @@ import { Progress } from '../screens/tabs/Progress.js';
 import { Settings } from '../screens/tabs/Settings.js';
 import { Library } from '../screens/library/Library.js';
 import { PassagePreview } from '../screens/library/PassagePreview.js';
+import { FeedbackReport } from '../screens/practice/FeedbackReport.js';
+import { Processing } from '../screens/practice/Processing.js';
 import { Recite } from '../screens/practice/Recite.js';
 import type { HomeTabParamList, OnboardingStackParamList } from './routeParams.js';
 
@@ -42,16 +50,41 @@ const TAB_ORDER: TabName[] = ['Home', 'Library', 'Progress', 'Settings'];
  * test-mocking overhead. Revisit when Milestone B/C need real stack
  * push/pop (modal PracticeStack) and deep links.
  */
-type PracticeState = { status: 'closed' } | { status: 'recording' } | { status: 'saved'; localUri: string };
+type PracticeState =
+  | { status: 'closed' }
+  | { status: 'recording' }
+  | { status: 'uploading' }
+  | { status: 'uploadError'; message: string }
+  | { status: 'processing'; attemptId: string }
+  | { status: 'feedback'; attemptId: string };
 
 export function AppNavigator(): JSX.Element {
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
+  const [profileType, setProfileType] = useState<'adult' | 'child'>('adult');
   const [activeTab, setActiveTab] = useState<TabName>('Home');
   const [selectedPassageId, setSelectedPassageId] = useState<string | null>(null);
   const [practiceState, setPracticeState] = useState<PracticeState>({ status: 'closed' });
   const contentClient = useMemo(() => new ContentClient(API_BASE_URL), []);
   const audioRecorder = useMemo(() => new ExpoAudioRecorder(), []);
+  const authClient = useMemo(() => new AuthClient(API_BASE_URL), []);
+
+  // Bootstrapped lazily on first upload attempt, then reused — a guest
+  // session + one profile + one practice session per passage is enough to
+  // exercise the record -> upload -> evaluate -> feedback loop without
+  // building full signup/login UI (out of scope here; CLAUDE.md's guest
+  // session decision is the minimum this needs).
+  const authSessionRef = useRef<AuthSession | null>(null);
+  const profileRef = useRef<Profile | null>(null);
+  const practiceSessionRef = useRef<PracticeSession | null>(null);
+  const attemptsClient = useMemo(
+    () => new AttemptsClient(API_BASE_URL, () => authSessionRef.current?.accessToken ?? ''),
+    [],
+  );
+  const sessionClient = useMemo(
+    () => new SessionClient(API_BASE_URL, () => authSessionRef.current?.accessToken ?? ''),
+    [],
+  );
 
   if (!onboardingComplete) {
     const step = ONBOARDING_ORDER[stepIndex];
@@ -69,9 +102,54 @@ export function AppNavigator(): JSX.Element {
       case 'LanguageSelect':
         return <LanguageSelect onNext={goNext} />;
       case 'ProfileType':
-        return <ProfileType onSelect={goNext} />;
+        return (
+          <ProfileType
+            onSelect={(selected) => {
+              setProfileType(selected);
+              goNext();
+            }}
+          />
+        );
       case 'ConsentExplanation':
         return <ConsentExplanation onAccept={goNext} />;
+    }
+  }
+
+  async function uploadRecording(passageId: string, localUri: string) {
+    setPracticeState({ status: 'uploading' });
+    try {
+      if (!authSessionRef.current) {
+        authSessionRef.current = await authClient.createGuestSession();
+      }
+      if (!profileRef.current) {
+        profileRef.current = await sessionClient.createProfile('Me', profileType);
+      }
+      // A retry reuses the same practice session (Milestone C: "Retry from
+      // feedback creates a new attempt in the same session"); a fresh
+      // practice-session ref is only created the first time this passage
+      // is practiced in this app session.
+      if (!practiceSessionRef.current || practiceSessionRef.current.passageId !== passageId) {
+        practiceSessionRef.current = await sessionClient.createPracticeSession(profileRef.current.id, passageId);
+      }
+
+      const clientAttemptId = generateUuidV4();
+      const idempotencyKey = generateUuidV4();
+      const attempt = await attemptsClient.createAttempt(practiceSessionRef.current.id, clientAttemptId, idempotencyKey);
+
+      const fileInfo = await getInfoAsync(localUri, { size: true });
+      if (!fileInfo.exists) {
+        throw new Error('Recording file no longer exists on device');
+      }
+      const { url } = await attemptsClient.createUploadUrl(attempt.id, fileInfo.size);
+      await uploadLocalFile(localUri, url, 'audio/wav');
+      await attemptsClient.completeAttempt(attempt.id);
+
+      setPracticeState({ status: 'processing', attemptId: attempt.id });
+    } catch (err) {
+      setPracticeState({
+        status: 'uploadError',
+        message: err instanceof Error ? err.message : 'Failed to upload recording',
+      });
     }
   }
 
@@ -85,28 +163,56 @@ export function AppNavigator(): JSX.Element {
         </IconButton>
         <Recite
           audioRecorder={audioRecorder}
-          onReadyToUpload={(localUri) => setPracticeState({ status: 'saved', localUri })}
+          onReadyToUpload={(localUri) => void uploadRecording(selectedPassageId, localUri)}
         />
       </View>
     );
   }
 
-  if (selectedPassageId && practiceState.status === 'saved') {
+  if (selectedPassageId && practiceState.status === 'uploading') {
     return (
       <View style={{ flex: 1, padding: 16, gap: 16 }}>
         <Text lang="en" variant="lg">
-          Recording saved
+          Uploading recording…
         </Text>
-        <Text lang="en" variant="sm" muted>
-          Saved locally on this device. Uploading for evaluation and feedback isn't available yet — that part of
-          the app isn't built.
-        </Text>
-        <Button
-          label="Back to passage"
-          lang="en"
-          onPress={() => setPracticeState({ status: 'closed' })}
-        />
       </View>
+    );
+  }
+
+  if (selectedPassageId && practiceState.status === 'uploadError') {
+    return (
+      <ErrorState
+        lang="en"
+        title="Upload failed"
+        description={practiceState.message}
+        actionLabel="Back to passage"
+        onAction={() => setPracticeState({ status: 'closed' })}
+      />
+    );
+  }
+
+  if (selectedPassageId && practiceState.status === 'processing') {
+    const { attemptId } = practiceState;
+    return (
+      <Processing
+        attemptId={attemptId}
+        attemptsClient={attemptsClient}
+        onDone={() => setPracticeState({ status: 'feedback', attemptId })}
+        onCancel={() => setPracticeState({ status: 'closed' })}
+      />
+    );
+  }
+
+  if (selectedPassageId && practiceState.status === 'feedback') {
+    const { attemptId } = practiceState;
+    return (
+      <FeedbackReport
+        attemptId={attemptId}
+        passageId={selectedPassageId}
+        attemptsClient={attemptsClient}
+        contentClient={contentClient}
+        onRetry={() => setPracticeState({ status: 'recording' })}
+      />
     );
   }
 

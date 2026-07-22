@@ -15,6 +15,7 @@ export const apiEnvSchema = z.object({
   OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
   SIGNED_URL_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   JWT_SECRET: z.string().min(16),
+  INFERENCE_SERVICE_URL: z.string().url().default('http://127.0.0.1:8000'),
 });
 
 export type ApiEnv = z.infer<typeof apiEnvSchema>;

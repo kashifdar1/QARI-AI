@@ -1,4 +1,4 @@
-import { integer, pgTable, real, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { integer, jsonb, pgTable, real, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { attempts } from './attempts';
 import { quranContentVersions } from './content';
 
@@ -30,6 +30,9 @@ export const evaluationResults = pgTable('evaluation_results', {
   contentVersionId: uuid('content_version_id')
     .notNull()
     .references(() => quranContentVersions.id, { onDelete: 'restrict' }),
+  status: text('status', { enum: ['completed', 'needs_rerecord', 'failed'] }).notNull(),
+  audioQualityFailureReasons: jsonb('audio_quality_failure_reasons').$type<string[]>().notNull().default([]),
+  audioQualityDurationSeconds: real('audio_quality_duration_seconds').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

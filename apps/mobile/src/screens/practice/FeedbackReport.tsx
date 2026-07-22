@@ -1,12 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
+import { createAudioPlayer, type AudioPlayer } from 'expo-audio';
 import { Button, Card, ErrorState, LoadingState, Text } from '@qari/ui';
 import type { AttemptsClient, FeedbackReport as FeedbackReportDto } from '../../api/attemptsClient.js';
+import type { ContentClient } from '../../api/contentClient.js';
 import { useLocale } from '../../i18n/LocaleContext.js';
 
 export type FeedbackReportProps = {
   attemptId: string;
+  passageId: string;
   attemptsClient: AttemptsClient;
+  contentClient: ContentClient;
   onRetry: () => void;
 };
 
@@ -22,10 +26,49 @@ type LoadState =
  * (Principle 2 / ADR-005). "Ask a teacher" is a disabled placeholder
  * (Principle 4: the path is reserved, the portal is post-MVP).
  */
-export function FeedbackReport({ attemptId, attemptsClient, onRetry }: FeedbackReportProps): JSX.Element {
+export function FeedbackReport({
+  attemptId,
+  passageId,
+  attemptsClient,
+  contentClient,
+  onRetry,
+}: FeedbackReportProps): JSX.Element {
   const { locale } = useLocale();
   const [state, setState] = useState<LoadState>({ status: 'loading' });
   const [reportSent, setReportSent] = useState(false);
+  const [referenceAudioUrl, setReferenceAudioUrl] = useState<string | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
+
+  useEffect(() => {
+    return () => {
+      playerRef.current?.release();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    contentClient
+      .getPassageDetail(passageId)
+      .then((detail) => {
+        if (!cancelled) setReferenceAudioUrl(detail.referenceAudioUrl);
+      })
+      .catch(() => {
+        // Reference playback is a nice-to-have on this screen — a failed
+        // lookup just leaves the "tap to hear" button absent, it doesn't
+        // block the feedback report itself from rendering.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contentClient, passageId]);
+
+  function playReference() {
+    if (!referenceAudioUrl) return;
+    playerRef.current?.release();
+    const player = createAudioPlayer(referenceAudioUrl);
+    playerRef.current = player;
+    player.play();
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -80,8 +123,16 @@ export function FeedbackReport({ attemptId, attemptsClient, onRetry }: FeedbackR
             <Text lang={locale} variant="xs" muted>
               {`Word ${issue.wordIndex + 1} · confidence: ${issue.tier}`}
             </Text>
-            {report.referenceAudioSlices.find((s) => s.wordIndexStart === issue.wordIndex) && (
-              <Button label="Tap to hear reference" lang={locale} onPress={() => {}} variant="secondary" />
+            {referenceAudioUrl && (
+              // Plays the whole passage's reference recitation, not a
+              // precise per-word slice — packages/domain's
+              // referenceAudioSlices isn't wired to a real per-word audio
+              // URL yet (it only has a bucket-root base URL + a "#t="
+              // fragment, no actual object key for this passage's
+              // reciter audio), and QUL word-level timing data is a
+              // separately-documented, unresolved license blocker
+              // (docs/STUBS.md).
+              <Button label="Tap to hear reference (full passage)" lang={locale} onPress={playReference} variant="secondary" />
             )}
           </Card>
         ))}

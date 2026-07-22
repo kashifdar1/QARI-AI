@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react-nativ
 import { ThemeProvider } from '@qari/ui';
 import { LocaleProvider } from '../../i18n/LocaleContext.js';
 import type { AttemptsClient, FeedbackReport as FeedbackReportDto } from '../../api/attemptsClient.js';
+import type { ContentClient } from '../../api/contentClient.js';
 import { FeedbackReport } from './FeedbackReport.js';
 
 function fakeClient(report: FeedbackReportDto): AttemptsClient {
@@ -11,11 +12,23 @@ function fakeClient(report: FeedbackReportDto): AttemptsClient {
   } as unknown as AttemptsClient;
 }
 
-function renderReport(client: AttemptsClient, onRetry = () => {}) {
+function fakeContentClient(referenceAudioUrl: string | null = 'https://example.com/reference.wav'): ContentClient {
+  return {
+    getPassageDetail: async () => ({ referenceAudioUrl }),
+  } as unknown as ContentClient;
+}
+
+function renderReport(client: AttemptsClient, onRetry = () => {}, contentClient = fakeContentClient()) {
   return render(
     <ThemeProvider>
       <LocaleProvider>
-        <FeedbackReport attemptId="attempt-1" attemptsClient={client} onRetry={onRetry} />
+        <FeedbackReport
+          attemptId="attempt-1"
+          passageId="passage-1"
+          attemptsClient={client}
+          contentClient={contentClient}
+          onRetry={onRetry}
+        />
       </LocaleProvider>
     </ThemeProvider>,
   );
@@ -81,7 +94,9 @@ describe('FeedbackReport — visible issues', () => {
       ),
     );
     await waitFor(() => expect(screen.getByText('Possible omission')).toBeTruthy());
-    expect(screen.getByRole('button', { name: 'Tap to hear reference' })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Tap to hear reference (full passage)' })).toBeTruthy(),
+    );
   });
 });
 
