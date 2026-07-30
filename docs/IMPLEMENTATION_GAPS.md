@@ -68,7 +68,7 @@ before/after diff and the real `curl` verification walkthrough.**
 | `apps/mobile` Jest suite determinism | implicit (tests must be trustworthy) | **Flaky, not deterministic.** Same suite passed 46/46 locally on one run and failed 6/46 on another (same 5000ms-timeout pattern), and failed in the actual CI run above. Root cause not yet diagnosed — likely React Native Testing Library + fake timers/native-module mocks under load/CI resource contention. Until fixed, a green local run doesn't prove CI will pass. |
 | Redaction test proves signed audio URLs never reach logs | Milestone A acceptance | ✅ Real and passing — `services/api/src/logging/redact.test.ts`. |
 | ≥80% coverage on `packages/domain` + auth/authorization | Milestone A acceptance | ✅ `feedbackPolicy.ts` at 98%; auth/authorization tests pass (93/93 in `services/api`). |
-| `docker-compose` for local Postgres/Redis/MinIO | Milestone A task 1 | File exists (`infrastructure/docker/docker-compose.yml`) but **has never actually been used** — this session used Homebrew Postgres directly instead. MinIO in that file has no client code to talk to it (see §3 below), so even starting it wouldn't do anything yet. |
+| `docker-compose` for local Postgres/Redis/MinIO | Milestone A task 1 | ✅ **Closed 2026-07-22** — used for real for the first time, on the Windows machine (session 3, see §9), standing up Postgres/Redis/MinIO with no native installs. Migrations, bucket creation, and the full API test suite all ran successfully against it. |
 | Lint rule: `packages/domain` stays framework-free | implied by ADR-001 ("a lint rule enforcing this is expected in Milestone A") | **Missing.** No `no-restricted-imports` rule in root `.eslintrc.json`; nothing currently prevents `packages/domain` from importing `fastify` or `react-native`. |
 | Grep-based CI check: no Quranic Arabic literals outside content storage | `docs/backlog.md` CONTENT-002 (Milestone B, but infra lands here) | **Missing.** No CI step or script implements this. Principle 1 is currently upheld by convention/discipline only, not enforced. |
 
@@ -430,3 +430,86 @@ verifiable server-side.
   here.
 - Android AAC decode and QUL word-level audio slicing (both called out in
   §0/§6) remain open, tracked, out of scope for this pass.
+
+## 9. Windows environment bring-up (2026-07-22, session 3)
+
+First session on the new machine per `docs/LAPTOP_HANDOFF.md` — a genuine
+platform switch (prior sessions were on a MacBook Pro), not just a new disk.
+Environment brought up from a clean `pnpm install` through a full green
+`pnpm test` run. Two real, reproducible bugs found; both fixed.
+
+**Environment notes (not bugs, just Windows-specific deviations from the
+handoff doc's Homebrew-based instructions):**
+- `corepack enable` fails with `EPERM` on this machine (no write access to
+  `C:\Program Files\nodejs`). Worked around with `npm install -g
+  pnpm@9.15.9` (matches the `packageManager` field in root `package.json`)
+  instead — installs to the user's npm prefix, no admin needed.
+- Used `infrastructure/docker/docker-compose.yml` for Postgres/Redis/MinIO
+  instead of native installs (Docker Desktop was already present; Homebrew
+  obviously isn't an option on Windows). This is the first time that
+  compose file has actually been exercised — closes the Milestone A gap
+  that previously flagged it as unused (§1 table, updated above). All
+  three services came up healthy on first try; migrations
+  (`tsx src/db/migrate.ts`) and bucket creation (`mc mb`) both worked
+  against it with no changes needed to the compose file itself.
+- `services/api`'s scripts (`migrate.ts`, `server.ts`, etc.) read
+  `process.env` directly — nothing in the repo loads `.env.development`
+  into the process automatically (no `dotenv`, no `--env-file`). The
+  handoff doc's instructions work on a shell that's had the file sourced
+  into it some other way; on this machine, ran migrations via `set -a;
+  source .env.development; set +a` in bash. Not a bug, just worth noting
+  for whoever automates this next — `pnpm dev`/`pnpm worker` will need the
+  same treatment or an explicit env loader added.
+- System Python on this machine is 3.14.6; `services/inference/pyproject.toml`
+  pins `torch==2.2.2`, which has no wheels for 3.14 (the pin was chosen for
+  Intel macOS wheel availability, per its own comment — never validated
+  against 3.14 either way). Installed Python 3.11.9 via `winget install
+  Python.Python.3.11` and built the venv against that (`py -3.11 -m venv
+  .venv`) instead of system Python. All 27 pytest tests passed, including a
+  real HuggingFace checkpoint download and forced-alignment run.
+
+**Bug found and fixed: committed Tanzil source file silently corrupted by
+Windows line-ending normalization, breaking its checksum test.**
+- `pnpm test` failed one real test:
+  `importCommand.test.ts` — `imports the full corpus: 6236 ayat...` — with
+  a SHA256 mismatch (`f9b19c25...` received vs `bf4f57b9...` expected).
+- Root cause: this machine's global git config has `core.autocrlf=true`
+  (the Windows default). On checkout, git silently rewrote
+  `content-import/sources/tanzil-uthmani-v1.1.txt`'s LF line endings to
+  CRLF, changing its bytes and thus its SHA256 — but `git status`/`git
+  diff` show nothing, because git's own autocrlf-aware comparison
+  considers the file unchanged. The corruption is only visible to code
+  that reads the raw file bytes, like the checksum test (working as
+  designed — this is exactly the class of bug ADR-003's checksum
+  verification exists to catch, just from an unexpected direction: the
+  repo's own checkout tooling, not a bad upstream export).
+  `git show HEAD:<path> | sha256sum` matched the test's expected value
+  exactly, confirming the committed blob was always correct.
+- Fixed two ways: (1) `git config core.autocrlf false` scoped to this repo
+  only (not the user's global config), and the file re-checked-out clean;
+  (2) added a new `.gitattributes` — `content-import/sources/** -text`
+  (never line-ending-normalize checksum-verified source dumps, on any
+  platform or git config) plus a general `* text=auto eol=lf` and
+  `*.wav`/`*.m4a` binary rules, so this can't silently recur for any future
+  clone regardless of the developer's own git settings. This is a
+  permanent fix, not just a workaround for this machine.
+- After the fix: `services/api` 98/98, full monorepo `pnpm test` 253/253,
+  `services/inference` pytest 27/27, `pnpm lint`/`pnpm typecheck` clean
+  across all 8 workspaces (matches the 2026-07-05 test-health snapshot in
+  §7 exactly — no regressions from the platform switch).
+- `apps/mobile`'s Jest suite reproduced the already-documented flakiness
+  (§1) under full-suite parallel load (`Library.test.tsx` timeout) but
+  passed cleanly in isolation and on a second full-suite run — consistent
+  with the existing, still-unexplained flake, not a new regression.
+- One more oddity, not a bug: `pnpm lint`'s `@qari/api-contracts` task
+  crashed once with a native libuv assertion
+  (`UV_HANDLE_CLOSING`, exit `3221226505`) after printing a fully valid
+  Redocly lint result — did not reproduce on a second run. Looks like a
+  Windows-specific Node.js process-exit race in that tool, not a real lint
+  failure; worth knowing about if it resurfaces in CI on a Windows runner.
+
+**Still not done (carried over, unrelated to this session):** the actual
+phone-side verification `LAPTOP_HANDOFF.md` calls for (recording → upload →
+Processing → FeedbackReport on a physical/emulated Android device) — this
+session only got the environment running, per the plan agreed with the
+project owner before starting.

@@ -1,0 +1,12 @@
+# Default: normalize text files to LF in the repo, checked out as LF.
+* text=auto eol=lf
+
+# Imported Quran content sources are checksum-verified on import (see
+# services/api/src/content-import and ADR-003). Their bytes must never be
+# touched by line-ending normalization on any platform/git config, or the
+# checksum check breaks silently with no `git status`/`git diff` signal.
+content-import/sources/** -text
+
+# Binary audio fixtures — never text-normalize.
+*.wav binary
+*.m4a binary
