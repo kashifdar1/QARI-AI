@@ -1009,5 +1009,77 @@ correctly post-reinstall; `expo@52.0.49.patch` is new this session).
 - 16kHz `AudioRecord` initialization has no fallback-and-resample path if
   a real device can't support it (ADR-008 Consequences) — not hit on the
   emulator, unverified on physical hardware.
-- `AppNavigator.test.tsx` still has no fetch-mocked coverage of the
-  upload/processing/feedback flow (carried since §8, unchanged).
+- ~~`AppNavigator.test.tsx` still has no fetch-mocked coverage of the
+  upload/processing/feedback flow (carried since §8, unchanged).~~ —
+  **closed same session, see §14.**
+
+## 14. Closed the `AppNavigator` test-coverage gap carried since §8 (2026-08-02, session 6 continued)
+
+While waiting on a physical Android device to become available for real-
+audio verification (§13's remaining gap), picked up the other item flagged
+as ready to go: real fetch-mocked coverage of the record → upload →
+processing → feedback flow, which had been manual/live-device-only since
+Milestone C first shipped.
+
+**Root cause of why this was hard before:** unlike every other screen in
+this app (`Library`, `PassagePreview`, `Recite`, `Processing`,
+`FeedbackReport`), `AppNavigator` constructed all of its dependencies
+(`ContentClient`, `AuthClient`, `AttemptsClient`, `SessionClient`,
+`createAudioRecorder()`, `uploadLocalFile`) internally via `useMemo` —
+it was the one place in the codebase that didn't follow the
+dependency-injection-via-props pattern everything else already uses for
+testability, so there was no way to hand it a fake client the way
+`Library.test.tsx`/`Processing.test.tsx`/`FeedbackReport.test.tsx` already
+do for their own screens.
+
+**Fix:** added `AppNavigatorProps` (all fields optional, each defaulting
+to the real construction it already had) — `contentClient`,
+`audioRecorder`, `authClient`, `attemptsClient`, `sessionClient`,
+`uploadFile`, and `pollIntervalMs` (threaded through to `Processing`, so
+tests don't wait on real 2-second poll intervals). Zero production
+call sites changed (`src/App.tsx` still renders `<AppNavigator />` with no
+props). Two small supporting fixes:
+- `__mocks__/expo-file-system.ts` was missing `getInfoAsync` entirely
+  (only `deleteAsync` existed) — `AppNavigator`'s upload orchestration
+  calls it directly and would have crashed immediately. Added as a
+  `jest.fn()` (not a plain function) defaulting to `{ exists: true, size:
+  12345 }`, so individual tests can override it via `mockResolvedValueOnce`
+  if a future test needs to exercise the "file no longer exists" path.
+- Two `console.error` "not wrapped in act(...)" warnings surfaced during
+  development (not test failures) — both traced to `Recite.tsx`'s own
+  async permission-check effect resolving in the gap between two separate
+  `await`ed test-helper calls, outside any `waitFor`'s `act()` wrapping.
+  Fixed by moving the "wait for Recite to settle" call to close that gap
+  at the source rather than suppressing the warning.
+
+**Five new tests**, covering exactly the transitions that were previously
+only proven by hand on a real device:
+1. The full happy path: Library → passage → record → upload → processing
+   (polls to `completed`) → feedback report renders.
+2. A `failed` terminal status routes to the dedicated "Processing failed"
+   screen (§12's fix) — proving `AppNavigator` never calls
+   `getFeedback()` for a status with no report, not just that the screen
+   exists in isolation.
+3. `needs_rerecord` (the audio-quality-gate rejection path) routes to the
+   real `FeedbackReport` screen with its report body, distinct from
+   `failed`.
+4. An error thrown mid-orchestration (`authClient.createGuestSession`
+   rejecting) surfaces as "Upload failed" with the real error message,
+   not a silent failure or crash.
+5. A `Retry` reuses the same practice session within one passage
+   (`practiceSessionRef` reuse logic) rather than creating a new one —
+   asserted via a call counter on the fake `SessionClient`, proving the
+   specific Milestone C requirement ("Retry creates a new attempt in the
+   same session") that was previously only implied by code reading, never
+   tested.
+
+**Verification:** `apps/mobile` — `tsc --noEmit` clean, `eslint` clean,
+`jest` 52/52 (was 47; +5 new, 0 removed, 0 regressed). Full monorepo not
+re-run this pass (no non-`apps/mobile` files touched).
+
+**Deliberately not done:** did not add coverage for `discardRecording`/
+`Re-record` mid-flow, pause/resume during an `AppNavigator`-driven
+recording, or the "file no longer exists" upload-failure branch now that
+`getInfoAsync` is mockable — all reachable extensions of this same
+fixture, left for whenever they're actually needed rather than added
+speculatively.

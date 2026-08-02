@@ -8,6 +8,7 @@ import { ContentClient } from '../api/contentClient.js';
 import { SessionClient, type PracticeSession, type Profile } from '../api/sessionClient.js';
 import { uploadLocalFile } from '../api/uploadFile.js';
 import { generateUuidV4 } from '../api/uuid.js';
+import type { AudioRecorder } from '../audio/audioRecorder.js';
 import { createAudioRecorder } from '../audio/createAudioRecorder.js';
 import { useLocale } from '../i18n/LocaleContext.js';
 import { ConsentExplanation } from '../screens/onboarding/ConsentExplanation.js';
@@ -59,16 +60,37 @@ type PracticeState =
   | { status: 'processingFailed'; attemptId: string }
   | { status: 'feedback'; attemptId: string };
 
-export function AppNavigator(): JSX.Element {
+export type AppNavigatorProps = {
+  // Every field below defaults to the real implementation the app ships
+  // with — these overrides exist solely so AppNavigator.test.tsx can
+  // inject fakes for the record -> upload -> processing -> feedback flow,
+  // the same dependency-injection-via-props pattern already used by
+  // Recite/Processing/FeedbackReport/Library/PassagePreview. Never passed
+  // in production (see src/App.tsx).
+  contentClient?: ContentClient;
+  audioRecorder?: AudioRecorder;
+  authClient?: AuthClient;
+  attemptsClient?: AttemptsClient;
+  sessionClient?: SessionClient;
+  uploadFile?: typeof uploadLocalFile;
+  /** Forwarded to Processing; lets tests avoid real poll-interval delays. */
+  pollIntervalMs?: number;
+};
+
+export function AppNavigator(props: AppNavigatorProps = {}): JSX.Element {
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [profileType, setProfileType] = useState<'adult' | 'child'>('adult');
   const [activeTab, setActiveTab] = useState<TabName>('Home');
   const [selectedPassageId, setSelectedPassageId] = useState<string | null>(null);
   const [practiceState, setPracticeState] = useState<PracticeState>({ status: 'closed' });
-  const contentClient = useMemo(() => new ContentClient(API_BASE_URL), []);
-  const audioRecorder = useMemo(() => createAudioRecorder(), []);
-  const authClient = useMemo(() => new AuthClient(API_BASE_URL), []);
+  const defaultContentClient = useMemo(() => new ContentClient(API_BASE_URL), []);
+  const contentClient = props.contentClient ?? defaultContentClient;
+  const defaultAudioRecorder = useMemo(() => createAudioRecorder(), []);
+  const audioRecorder = props.audioRecorder ?? defaultAudioRecorder;
+  const defaultAuthClient = useMemo(() => new AuthClient(API_BASE_URL), []);
+  const authClient = props.authClient ?? defaultAuthClient;
+  const uploadFile = props.uploadFile ?? uploadLocalFile;
 
   // Bootstrapped lazily on first upload attempt, then reused — a guest
   // session + one profile + one practice session per passage is enough to
@@ -78,14 +100,16 @@ export function AppNavigator(): JSX.Element {
   const authSessionRef = useRef<AuthSession | null>(null);
   const profileRef = useRef<Profile | null>(null);
   const practiceSessionRef = useRef<PracticeSession | null>(null);
-  const attemptsClient = useMemo(
+  const defaultAttemptsClient = useMemo(
     () => new AttemptsClient(API_BASE_URL, () => authSessionRef.current?.accessToken ?? ''),
     [],
   );
-  const sessionClient = useMemo(
+  const attemptsClient = props.attemptsClient ?? defaultAttemptsClient;
+  const defaultSessionClient = useMemo(
     () => new SessionClient(API_BASE_URL, () => authSessionRef.current?.accessToken ?? ''),
     [],
   );
+  const sessionClient = props.sessionClient ?? defaultSessionClient;
 
   if (!onboardingComplete) {
     const step = ONBOARDING_ORDER[stepIndex];
@@ -142,7 +166,7 @@ export function AppNavigator(): JSX.Element {
         throw new Error('Recording file no longer exists on device');
       }
       const { url } = await attemptsClient.createUploadUrl(attempt.id, fileInfo.size);
-      await uploadLocalFile(localUri, url, 'audio/wav');
+      await uploadFile(localUri, url, 'audio/wav');
       await attemptsClient.completeAttempt(attempt.id);
 
       setPracticeState({ status: 'processing', attemptId: attempt.id });
@@ -198,6 +222,7 @@ export function AppNavigator(): JSX.Element {
       <Processing
         attemptId={attemptId}
         attemptsClient={attemptsClient}
+        {...(props.pollIntervalMs !== undefined ? { pollIntervalMs: props.pollIntervalMs } : {})}
         onDone={(status) =>
           setPracticeState(
             // 'failed' means no report was ever generated (evaluation
