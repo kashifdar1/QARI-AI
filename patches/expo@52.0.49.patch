@@ -1,0 +1,35 @@
+diff --git a/react-native.config.js b/react-native.config.js
+index 62eba2a93ddf0c53ae66985cbb7f7f9fa7219dcc..a231747b0026263ccdddec7dbf7edd07ca0137d3 100644
+--- a/react-native.config.js
++++ b/react-native.config.js
+@@ -1,7 +1,29 @@
+-const findProjectRootSync = require('expo-modules-autolinking/exports').findProjectRootSync;
+ const fs = require('fs');
+ const path = require('path');
+ 
++// Inlined equivalent of expo-modules-autolinking/exports' findProjectRootSync
++// (walk up from cwd to the nearest package.json's directory). The original
++// `require('expo-modules-autolinking/exports')` self-reference back into
++// the very package that's evaluating this file fails silently when
++// expo-modules-autolinking's own reactNativeConfig/config.js loads this
++// file via require-from-string with a mocked/sandboxed module.paths
++// (its requireConfig() catches any error and returns null) — producing a
++// null `dependency.platforms.android`, which falls through to a wrong,
++// hardcoded fallback import path (`expo.core.ExpoModulesPackage`, found by
++// scanning for any legacy ReactPackage-implementing class) instead of this
++// file's actual `expo.modules.ExpoModulesPackage`. Confirmed via direct
++// reproduction of the exact command apps/mobile/android/settings.gradle
++// runs; see docs/adr/008-android-raw-pcm-capture.md's Consequences.
++function findProjectRootSync(cwd = process.cwd()) {
++  let dir = cwd;
++  while (true) {
++    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
++    const parent = path.dirname(dir);
++    if (parent === dir) throw new Error(`Couldn't find "package.json" up from path "${cwd}"`);
++    dir = parent;
++  }
++}
++
+ const projectRoot = findProjectRootSync();
+ 
+ function isMatchedInFile(filePath, regexp) {

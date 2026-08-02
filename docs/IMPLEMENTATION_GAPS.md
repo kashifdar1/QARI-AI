@@ -884,3 +884,130 @@ the LAN-IP workaround from §11:**
 closed except the AAC transcode itself, which remains the real blocker to
 a genuine `completed` evaluation and is out of scope for a quick pass
 (native module work, ADR-007).
+
+## 13. The AAC transcode wall is gone — Android now captures real WAV, verified end-to-end (2026-08-01→02, session 6)
+
+Closes the one item §12 left open. Full technical detail, root causes, and
+the alternatives evaluated live in **ADR-008**
+(`docs/adr/008-android-raw-pcm-capture.md`) — this section is the session
+narrative; ADR-008 is the durable record.
+
+**What shipped:** Android no longer records via `expo-audio`'s
+`MediaRecorder` (AAC/m4a only, per ADR-007) at all. A new local Expo module,
+`apps/mobile/modules/qari-audio-recorder`, captures raw 16kHz mono 16-bit
+PCM directly via Android's `AudioRecord` API and hand-writes a WAV file —
+no encode step exists, so there is nothing to transcode and nothing to get
+wrong in a decode step. iOS is untouched (`expo-audio`'s `LINEARPCM` path
+already worked). `apps/mobile/src/audio/createAudioRecorder.ts` selects the
+implementation by `Platform.OS`.
+
+**The path there was not straight — three real dependency/tooling bugs
+were hit and resolved, each with its own root-cause investigation:**
+
+1. Tried `@siteed/audio-studio` (MIT, npm) first — architecturally the
+   right approach, already built and tested. Version `3.2.1` doesn't
+   compile against this project's `expo-modules-core@2.2.3` (a genuine
+   nullable-parameter override mismatch in its device-switching code).
+   `3.1.1` compiles but its bundled C++ audio-analysis code (unused by
+   this app) hits Windows' 260-char `MAX_PATH` limit during its own CMake
+   build — a *different* failure from the `expo-modules-core` one §11
+   already worked around via `virtual-store-dir-max-length`, and not
+   fixable the same way (confirmed via direct reproduction; a `subst`
+   drive-letter workaround was also tried and failed, since CMake/ninja
+   resolve substituted drives back to their real path internally). Pivoted
+   to writing the module from scratch — genuinely low-friction since
+   `apps/mobile/android/` is already a committed, autolinked native
+   project.
+2. **A real, independent bug in `expo@52.0.49` itself**, found while
+   getting the from-scratch module's first build to compile — unrelated to
+   the `AudioRecord` decision, but blocking verification of it. `expo`'s
+   own `react-native.config.js` self-references
+   `expo-modules-autolinking/exports` to find the project root; when
+   *other* packages' configs are evaluated by `expo-modules-autolinking`'s
+   own sandboxed config loader, that self-reference fails silently (caught,
+   returns `null`), and a fallback path kicks in that fabricates a
+   plausible-but-wrong native class reference
+   (`expo.core.ExpoModulesPackage` instead of the real
+   `expo.modules.ExpoModulesPackage`) from the package's Android namespace
+   plus the first `ReactPackage`-implementing class file it finds. This
+   would affect any project on this exact `expo`+`expo-modules-autolinking`
+   version pair, on any OS — it surfaced now only because this session was
+   the first time `apps/mobile/android/app/build`'s generated
+   `PackageList.java` got regenerated from a clean state. Fixed with
+   `patches/expo@52.0.49.patch` (pnpm patch), inlining the two-line
+   "find nearest `package.json`" logic instead of the fragile
+   cross-package `require`. Diagnosed by directly reproducing the exact
+   Node command `settings.gradle` runs and bisecting from there — not
+   guessed.
+3. Even after that patch was confirmed correct via direct command
+   reproduction, the Gradle build kept failing with the *same* wrong value
+   until a **third, separate cache** —
+   `apps/mobile/android/build/generated/autolinking/autolinking.json`
+   (root `android/build/`-scoped, distinct from `app/build/` and from the
+   Gradle daemon, which was also stopped and didn't help alone) — was
+   deleted. This build has (at least) three independent layers that can
+   hold a stale autolinking result; clearing one or two isn't sufficient
+   after any change that affects autolinking.
+4. **A fourth real bug, found only once real audio finally reached
+   `fetch()`**: Kotlin's `File.toURI().toString()` produces a *single*-slash
+   `file:/data/...` URI. `expo-file-system`'s `getInfoAsync` tolerates
+   this, so the app got past the file-existence check — but React Native's
+   `fetch()` (used to read the local file for upload) does not, failing
+   with `Failed to construct 'Response': The status provided (0) is
+   outside the range [200, 599]`. Fixed in `qariAudioRecorder.ts` by
+   normalizing to `file:///...` before returning — the same
+   normalize-once pattern as the earlier `expoAudioRecorder.ts` bare-path
+   fix (§10-11), this time catching a stricter consumer than that fix's
+   `getInfoAsync` case exercised.
+
+**Verified end-to-end on `qari_test` (emulator), for the first time this
+project has ever gotten this far on Android:** recorded a real clip → real
+16kHz mono 16-bit PCM WAV (`file:///data/user/0/com.qariai.app/cache/Audio/
+recording-*.wav`, confirmed via the reviewLocal screen) → uploaded
+successfully → BullMQ queue → worker dequeued → `services/inference`
+**decoded the WAV with no error** (the `Format not recognised` failure
+from every prior session's Android attempt is gone) → audio quality gate
+ran → worker log read `evaluation job 3 (attempt ...) completed` (not
+`failed`) → app displayed "We're not confident enough to flag anything
+here... Please try again: mostly silent: 97.6% of the clip is silence." —
+the correct, honest `needs_rerecord` outcome for the emulator's silent
+virtual microphone, and exactly the Principle 2 abstain behavior working
+as designed, not a bug.
+
+**What this does *not* yet prove:** a genuine `completed` evaluation with
+real word-level segments/issue candidates — that needs actual recitation
+audio, which requires either a physical Android device or an emulator
+configured with host-audio passthrough, neither attempted this session.
+That is now the **only** remaining gap between this pipeline and a fully
+proven Milestone C on Android.
+
+**Also fixed in the same session, smaller and independent (see commit for
+full detail):** the worker's `tsx watch` process died mid-session when
+`pnpm install --force` (needed for the `virtual-store-dir-max-length`
+change) churned `node_modules` out from under it — restarted cleanly, no
+code change needed, just a reminder that `tsx watch` doesn't survive a
+full dependency reinstall.
+
+**Verification:** `apps/mobile` — `tsc --noEmit` clean, `eslint` clean
+(including the new `modules/qari-audio-recorder` directory), `jest` 47/47.
+Full monorepo (`turbo run test --force`): 12/12 workspace tasks green —
+`@qari/api` 98/98, `@qari/ui` 23/23, `@qari/mobile` 47/47, plus
+`@qari/domain`/`@qari/content-schema`/`@qari/config`/`@qari/admin`
+unchanged. No regressions from the `pnpm install --force` reinstall or the
+two new patches (`expo-audio@0.3.5.patch` confirmed still applied
+correctly post-reinstall; `expo@52.0.49.patch` is new this session).
+
+**Unresolved / next session:**
+- Prove a real `completed` evaluation with word-level feedback — needs
+  real recitation audio on a physical Android device, or emulator
+  host-audio passthrough.
+- `apps/mobile/modules/qari-audio-recorder` doesn't handle audio focus
+  loss, phone calls, or Bluetooth device switching mid-recording (ADR-008
+  Consequences) — `@siteed/audio-studio` has real tests for these; this
+  project's own module doesn't yet. Worth hardening before this is
+  considered production-ready rather than just device-verified.
+- 16kHz `AudioRecord` initialization has no fallback-and-resample path if
+  a real device can't support it (ADR-008 Consequences) — not hit on the
+  emulator, unverified on physical hardware.
+- `AppNavigator.test.tsx` still has no fetch-mocked coverage of the
+  upload/processing/feedback flow (carried since §8, unchanged).

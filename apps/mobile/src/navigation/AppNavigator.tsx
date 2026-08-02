@@ -8,7 +8,7 @@ import { ContentClient } from '../api/contentClient.js';
 import { SessionClient, type PracticeSession, type Profile } from '../api/sessionClient.js';
 import { uploadLocalFile } from '../api/uploadFile.js';
 import { generateUuidV4 } from '../api/uuid.js';
-import { ExpoAudioRecorder } from '../audio/expoAudioRecorder.js';
+import { createAudioRecorder } from '../audio/createAudioRecorder.js';
 import { useLocale } from '../i18n/LocaleContext.js';
 import { ConsentExplanation } from '../screens/onboarding/ConsentExplanation.js';
 import { LanguageSelect } from '../screens/onboarding/LanguageSelect.js';
@@ -67,7 +67,7 @@ export function AppNavigator(): JSX.Element {
   const [selectedPassageId, setSelectedPassageId] = useState<string | null>(null);
   const [practiceState, setPracticeState] = useState<PracticeState>({ status: 'closed' });
   const contentClient = useMemo(() => new ContentClient(API_BASE_URL), []);
-  const audioRecorder = useMemo(() => new ExpoAudioRecorder(), []);
+  const audioRecorder = useMemo(() => createAudioRecorder(), []);
   const authClient = useMemo(() => new AuthClient(API_BASE_URL), []);
 
   // Bootstrapped lazily on first upload attempt, then reused — a guest

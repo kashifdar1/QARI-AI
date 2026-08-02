@@ -1,6 +1,11 @@
 # ADR-007: On-Device Recording Transcode Module
 
-- Status: Accepted (platform-asymmetric; Android side unverified — see Consequences)
+- Status: Accepted for iOS; **Android section superseded by
+  [ADR-008](008-android-raw-pcm-capture.md)** — the `MediaCodec` transcode
+  plan below was never implemented, and once a real Android environment
+  became available, raw-PCM capture (no AAC encode step, no transcode
+  needed at all) turned out to be strictly better than transcoding AAC
+  after the fact. Left as-is below for historical record.
 - Date: 2026-07-03
 
 ## Context
