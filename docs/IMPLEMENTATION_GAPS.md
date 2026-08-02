@@ -513,3 +513,289 @@ phone-side verification `LAPTOP_HANDOFF.md` calls for (recording → upload →
 Processing → FeedbackReport on a physical/emulated Android device) — this
 session only got the environment running, per the plan agreed with the
 project owner before starting.
+
+## 10. Android emulator bring-up + first real on-device upload attempt (2026-07-30, session 4)
+
+Picked up where session 3 left off: the environment was running but had
+never been exercised from a device. This session built an Android emulator
+from scratch (none existed on this machine) and, for the first time,
+actually drove a real recording through the app UI far enough to hit a new,
+real bug in the upload path. That bug is root-caused below but **not fixed
+yet** — deliberately stopping here for the day; fixing it is the first task
+next session.
+
+**Committed housekeeping first:** `.gitattributes` and the `docs/
+IMPLEMENTATION_GAPS.md` §9 update from session 3 had been sitting uncommitted
+on this machine for over a week. Committed as `8b9ad1f` before starting new
+work.
+
+**Android SDK/emulator did not exist on this machine — built from scratch:**
+- Android Studio and `platform-tools` (`adb`) were present, but no
+  `cmdline-tools`, no system images, and no AVD existed anywhere under
+  `%LOCALAPPDATA%\Android\Sdk`.
+- Downloaded `cmdline-tools` (build 15859902) directly from
+  `dl.google.com/android/repository/` — note: `developer.android.com`'s own
+  download page, when fetched through an AI web-summarizer, returned a
+  plausible-looking but **wrong/hallucinated CDN URL**
+  (`edgedl.me.gvt1.com/...`) that 404'd. Cross-checked the real URL against
+  Google's machine-readable `repository2-3.xml` manifest instead of trusting
+  the summarized page — worth remembering as a general pattern: don't trust
+  an AI-summarized download link for a binary; verify against a
+  machine-readable manifest or check the file itself (a 155MB zip that's
+  actually a 1.4KB HTML 404 page is an easy, cheap check).
+- Installed `platform-tools`, `platforms;android-34`,
+  `system-images;android-34;google_apis;x86_64`, and `emulator` via
+  `sdkmanager`; accepted licenses non-interactively.
+- Created AVD `qari_test` (`avdmanager create avd -n qari_test -k
+  "system-images;android-34;google_apis;x86_64"`). Note: `avdmanager`
+  printed a scary-looking `Error: Could not load devices from
+  .../devices.xml` on first create — this was a harmless side-effect of not
+  passing `--device`; the AVD was created successfully anyway (confirmed via
+  `emulator -list-avds` and a real boot). Boots in ~2-3 minutes cold
+  (`-no-snapshot`).
+
+**Content was missing from the persisted Postgres volume — this is what
+`Library` was actually failing on, not a networking bug:**
+- After bringing the stack up and building/installing the dev client
+  (`expo run:android`, ~11 min first build, patched `expo-audio` Kotlin
+  compiled cleanly), the Library tab showed "Failed to list passages (404)".
+- Investigated as a possible Android-emulator-to-host networking issue
+  first (Android emulators can't reach the host via `localhost`; fixed
+  `apps/mobile/.env.development`'s `EXPO_PUBLIC_API_BASE_URL` from
+  `http://localhost:3000/v1` to `http://10.0.2.2:3000/v1` — a real,
+  necessary fix, but not the actual cause of the 404).
+- `curl localhost:3000/v1/content/passages` from the host returned
+  `{"code":"NOT_FOUND","message":"No approved content version is available
+  yet"}` — a real, correct 404 from the content service itself. The
+  Postgres *container* had persisted from session 3 (created "8 days ago"),
+  but apparently no content version was ever imported/approved into it (or
+  this is a different volume than assumed) — either way, the fix is the
+  same: ran `content:import` (full 6236-ayah Tanzil corpus, checksum
+  matched the known-good value), `content:approve`, `content:seed-mvp-
+  passages` (23 passages created), `content:seed-placeholder-audio` (23/23
+  seeded). Confirmed fixed by re-tapping Library in the running emulator —
+  screenshot shows all 23 seeded passages listed.
+
+**New real bug found: recording upload fails with "Recording file no
+longer exists on device" — root-caused, not yet fixed.**
+- After Library loaded, picked a passage, recorded on the emulator's
+  (software) microphone, stopped, tapped Upload — got "Upload failed:
+  Recording file no longer exists on device."
+- First ruled out the emulator's audio codec/hardware as the cause: `adb
+  logcat` around the recording window shows a completely healthy sequence —
+  `MediaCodecSource (audio) starting` → ran for the full ~8s recording →
+  `encoder (audio) stopping` → `puller (audio) reached EOS` → `source
+  (audio) stopped`, no errors. (The `OMX service is not available` /
+  `mediarecorder went away with unhandled events` lines nearby are red
+  herrings — benign/expected on this system image, not the failure.) Also
+  confirmed the previously-applied `expo-audio@0.3.5.patch` (session 2's fix
+  for the inverted `isPrepared` condition) is correctly present in
+  `node_modules/.pnpm/expo-audio@0.3.5.../AudioModule.kt` — so native
+  recording is genuinely working now. This is a **second, previously
+  undiscovered** bug in the same pipeline, one that only surfaces once
+  capture succeeds far enough to reach the upload step — no prior session's
+  `curl`-only verification could have caught it.
+- Root cause: `expo-audio`'s native `AudioRecorder.uri` Kotlin property
+  (`AudioModule.kt:316-318`, `Property("uri") { ref -> ref.filePath }`)
+  returns a **bare OS filesystem path** (e.g.
+  `/data/user/0/com.qariai.app/cache/Audio/recording-<uuid>.m4a`) — no
+  `file://` scheme. `apps/mobile/src/audio/expoAudioRecorder.ts`'s
+  `stopRecording()` (line 70-76) passes that raw value straight through as
+  `localUri`, and `AppNavigator.tsx:139` calls `expo-file-system`'s
+  `getInfoAsync(localUri)` on it directly. `expo-file-system`'s Android
+  implementation (`FileSystemModule.kt`'s `slashifyFilePath`, line 68-77)
+  only adds the `file:///` prefix to strings that **already** start with
+  `file:` (regex `^file:/*`) — a path with no scheme at all is left
+  untouched, so `Uri.parse()` yields `scheme == null`. `getInfoAsync` then
+  treats a null-scheme URI as an **Android resource lookup**
+  (`openResourceInputStream`, `FileSystemModule.kt:141-146`) instead of a
+  real file path, which throws `FileNotFoundException` — caught and
+  reported as `exists: false`. Hence "Recording file no longer exists,"
+  even though the file is sitting right there on disk.
+- **Fix identified, not yet applied** (stopping for the day before
+  implementing): normalize the URI once, at the point of capture, in
+  `ExpoAudioRecorder.stopRecording()` — prefix with `file://` if not already
+  present. That single point feeds every downstream consumer (`getInfoAsync`
+  in `AppNavigator.tsx`, `uploadLocalFile`'s `fetch(localUri).blob()` in
+  `uploadFile.ts`, and `deleteAsync` in `discardRecording`), so fixing it
+  there fixes the whole chain without touching call sites. **First task for
+  next session** — implement, then re-run this exact recording → upload →
+  Processing → FeedbackReport flow on the same running emulator to confirm.
+
+**Environment state left at end of session (machine can be closed/slept
+without losing anything):**
+- All locally-started processes stopped cleanly: `services/inference`
+  (uvicorn), `services/api` server, `services/api` worker, Metro/`expo run:
+  android`, and the AVD (`qari_test`).
+- Docker containers (`docker-postgres-1`, `docker-redis-1`,
+  `docker-minio-1`) stopped (not removed) via `docker compose stop` — data
+  volumes intact, including the now-imported/approved/seeded content, so
+  next session does **not** need to repeat the `content:import`/`approve`/
+  seed sequence.
+- Not committed: the `expo-file-system` URI fix (not yet written), and the
+  emulator/Android-SDK setup itself (nothing to commit — it lives under
+  `%LOCALAPPDATA%\Android\Sdk` and `~/.android/avd`, outside the repo).
+
+**Quick-start for next session (everything below already exists on this
+machine — no re-downloading needed):**
+1. Start Docker Desktop, then `docker compose -f
+   infrastructure/docker/docker-compose.yml up -d` (containers restart with
+   content already seeded).
+2. `services/inference`: `.venv/Scripts/python.exe -m uvicorn app.main:app
+   --host 127.0.0.1 --port 8000`.
+3. `services/api`: `source .env.development` (`set -a; ...; set +a` in
+   bash) then `npx tsx src/server.ts` and, separately, `npx tsx watch
+   src/worker.ts`.
+4. Emulator: `%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe -avd
+   qari_test -no-snapshot` (~2-3 min cold boot).
+5. `apps/mobile`: fix the URI bug above first, then `npx expo run:android`
+   (native rebuild needed since it's a JS-only change this time — actually
+   a plain Metro reload / `npx expo start --dev-client` would suffice once
+   the dev client APK is already installed from this session; only rerun
+   `expo run:android` if native code changes).
+
+## 11. Two real bugs fixed and verified live; reached the known AAC-decode wall honestly (2026-08-01, session 5)
+
+Picked up exactly where session 4 left off, per its own quick-start list —
+environment came back up cleanly with no re-downloading. This session closed
+out both the mic-permission UX complaint and the §10 upload bug, found and
+fixed a *third*, previously-unknown bug in the same path, and for the first
+time got a real on-device recording all the way through upload → queue →
+worker → inference call before hitting the already-documented AAC/m4a decode
+limitation (§0/§6) — an honest, expected stopping point, not a new failure.
+
+**Bring-up:** Docker Desktop + `docker compose up -d`, `services/inference`
+(uvicorn), `services/api` server + worker, `qari_test` AVD (warm boot, ~25s
+this time), Metro (`npx expo start --dev-client` — dev client APK already
+installed, no `expo run:android` needed since neither fix touched native
+code). One snag: the dev-client's cached Metro connection failed with
+"Failed to connect to /127.0.0.1:8081" on first launch — fixed with `adb
+reverse tcp:8081 tcp:8081` (normally automatic, wasn't for this stale
+session). Content, migrations, and MinIO bucket all persisted from session
+4 — no re-seeding needed.
+
+**Bug fixed: mic permission asked again on every visit to the Recite
+screen, even after the OS had already granted it.**
+- User-reported: "once microphone permission granted if user came second
+  time it's asking again."
+- Verified live before touching code: checked `dumpsys package
+  com.qariai.app` — `RECORD_AUDIO: granted=true` at the OS level, persisted
+  correctly across app restarts (Android's normal behavior). Tapped "Allow
+  microphone" anyway to confirm — no native OS dialog appeared (as
+  expected; Android never re-shows a granted permission's dialog). So the
+  "asking again" the user was seeing was **the app's own idle screen**
+  reappearing every time, not a real OS re-prompt: `Recite.tsx`'s state
+  machine always mounts fresh into `idle` and forces a tap through "Allow
+  microphone" regardless of actual OS grant status, because
+  `AudioRecorder` (`apps/mobile/src/audio/audioRecorder.ts`) had no
+  "check without prompting" method — only `requestPermission()`.
+- Fix: added `getPermissionStatus(): Promise<'granted' | 'denied' |
+  'undetermined'>` to the `AudioRecorder` interface, implemented via
+  `expo-audio`'s `getRecordingPermissionsAsync()` (a real, exported,
+  non-prompting status check — confirmed in `expo-audio`'s own build
+  output) in `ExpoAudioRecorder`, and a matching implementation in
+  `FakeAudioRecorder` for tests. `Recite.tsx` now checks this on mount and,
+  if already `granted`, auto-fires `REQUEST_PERMISSION` →
+  `PERMISSION_GRANTED` through the existing canonical state machine
+  (`packages/domain`, untouched) instead of waiting for a tap — the idle
+  screen still exists and is still reachable (denied/undetermined status
+  leaves it exactly as before), it's just skipped when there's nothing
+  left to ask.
+- Test coverage: `Recite.test.tsx`'s three tests that used to always tap
+  "Allow microphone" against a default (granted) `FakeAudioRecorder` were
+  updated to construct `new FakeAudioRecorder('undetermined')` instead,
+  preserving their original manual-tap coverage; added a new test asserting
+  the granted case skips straight to "Start recording" with no
+  "Allow microphone" button rendered at all. `apps/mobile`: typecheck
+  clean, lint clean, 47/47 tests passing (46 previously + 1 new).
+- Verified live on the emulator, twice: after granting permission once,
+  force-stopped and relaunched the app (fresh onboarding, since onboarding
+  state is separately in-memory-only per session — expected, unrelated,
+  already documented) and navigated back to a passage's Recite screen —
+  went straight to "Mic ready," no permission screen at all.
+
+**Bug fixed (from session 4's root-cause): "Recording file no longer
+exists on device."**
+- Applied the fix identified and documented in §10: `expo-audio`'s
+  Android `AudioRecorder.uri` returns a bare filesystem path with no
+  `file://` scheme. `ExpoAudioRecorder.stopRecording()`
+  (`apps/mobile/src/audio/expoAudioRecorder.ts`) now normalizes it —
+  prefixes `file://` if not already present — before returning, fixing
+  every downstream consumer (`getInfoAsync`, `uploadLocalFile`'s
+  `fetch().blob()`, `discardRecording`'s `deleteAsync`) from the single
+  point they all flow through.
+- Verified live: recorded a real ~8s clip on the emulator, the
+  `reviewLocal` screen's local-URI display now reads
+  `file:///data/user/0/com.qariai.app/cache/Audio/recording-<uuid>.m4a`
+  (previously the bare path), and tapping Upload no longer hits "Recording
+  file no longer exists" — it proceeds to the actual network request.
+
+**New bug found and fixed: presigned upload URL host unreachable from the
+emulator.**
+- With the above two fixes in place, Upload got further but then failed
+  with "Network request failed." Root cause: `services/api/
+  .env.development`'s `OBJECT_STORAGE_ENDPOINT=http://localhost:9000` is
+  used both for the server's own S3 SDK calls to MinIO *and*, via
+  `getSignedUrl`, baked directly into the presigned URL host handed back to
+  the mobile client — but the client here is the Android emulator, which
+  (same as the API-base-URL issue) cannot resolve `localhost` to the host
+  machine. There's no separate "internal vs. public" endpoint config
+  anywhere in `objectStorage.ts`/`server.ts`/`worker.ts` — a single value
+  serves both roles.
+- `10.0.2.2` (the fix used for `EXPO_PUBLIC_API_BASE_URL`) doesn't work
+  here because this same value is *also* used by the server process
+  running on the host — and `10.0.2.2` only resolves inside the emulator's
+  own virtual network, not on the host itself. Confirmed the host's own
+  LAN IP (`192.168.4.68`, the same address the API server already reports
+  binding to at startup) works from both sides: `curl` from the host to
+  `http://192.168.4.68:9000/minio/health/live` returned `200`, and this is
+  the standard Android-emulator NAT path for reaching the host's LAN
+  network (unlike `localhost`). Changed
+  `OBJECT_STORAGE_ENDPOINT=http://192.168.4.68:9000` in `services/api/
+  .env.development` and restarted the server + worker.
+- **Caveat, not fully resolved**: this LAN IP is DHCP-assigned and can
+  change (e.g., after reconnecting Wi-Fi, switching networks, or a lease
+  renewal) — this is a same-session workaround, not a durable fix. A real
+  fix would add a separate `OBJECT_STORAGE_PUBLIC_ENDPOINT`-style config
+  distinct from the internal SDK endpoint, defaulting to the existing
+  behavior in every environment except local-emulator dev. Not attempted
+  this session (`services/api` has no code changes today, only the one
+  `.env.development` value) — flagged here for whoever hits this again
+  after a network change.
+- Verified live: Upload succeeded past the network-request stage this
+  time — confirmed via the worker log actually picking up and processing
+  the job.
+
+**Reached the known wall, honestly:** the worker log shows the real
+recording was queued, dequeued, and sent to `services/inference`, which
+correctly rejected it: `InferenceRequestError: ... "Could not decode
+audio: Error opening <_io.BytesIO ...>: Format not recognised."` — this is
+exactly the already-documented, already-tracked AAC/m4a-vs-`soundfile`
+limitation from §0/§6 (ADR-007 scope), not a new bug. The app's own
+"Failed to fetch feedback (404)" screen at this point is a legitimate 404
+(no report exists for a `failed` attempt) but arguably poor UX — worth a
+follow-up to show a clearer "processing failed" state instead of a raw
+retry-404 screen, not attempted this session.
+
+**Net effect: the full pipeline — record (real mic audio) → upload (real
+MinIO PUT) → queue (real BullMQ) → worker dequeue → real inference-service
+call — now works end-to-end on this Android emulator for the first time.**
+Only the pre-existing, already-scoped-out AAC transcode gap stands between
+this and a real `completed` evaluation with word-level feedback.
+
+**Verification:** `apps/mobile` — `tsc --noEmit` clean, `eslint` clean,
+`jest` 47/47 (was 46; +1 new permission-skip test). `services/api` code
+unchanged this session (only a local `.env.development` value), not
+re-run.
+
+**Unresolved / next session:**
+- Real Quran recitation → `completed` status with word-level segments is
+  still unverified end-to-end — blocked on the Android AAC→WAV transcode
+  (ADR-007) exactly as before. iOS (real WAV) remains the fastest path to
+  proving that half of the pipeline, next time a Mac/iOS environment is
+  available.
+- `OBJECT_STORAGE_ENDPOINT`'s dual internal/public role (above) should get
+  a real fix rather than a per-session LAN-IP workaround.
+- `FeedbackReport`'s "Failed to fetch feedback (404)" on a `failed`
+  attempt should probably render a distinct "processing failed" state
+  instead of the generic retry-404 `ErrorState`.

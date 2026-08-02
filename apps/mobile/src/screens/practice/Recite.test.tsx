@@ -17,7 +17,7 @@ function renderRecite(recorder = new FakeAudioRecorder(), onReadyToUpload = jest
 
 describe('Recite — the canonical recorder state machine wired to real capture', () => {
   it('walks permission -> ready -> recording -> stop -> reviewLocal -> upload', async () => {
-    const { onReadyToUpload } = renderRecite();
+    const { onReadyToUpload } = renderRecite(new FakeAudioRecorder('undetermined'));
 
     fireEvent.press(screen.getByRole('button', { name: 'Allow microphone' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start recording' })).toBeTruthy());
@@ -32,6 +32,12 @@ describe('Recite — the canonical recorder state machine wired to real capture'
     expect(onReadyToUpload).toHaveBeenCalledWith(expect.stringContaining('file://fake-recording'));
   });
 
+  it('skips the Allow-microphone screen when the OS permission is already granted', async () => {
+    renderRecite(new FakeAudioRecorder('granted'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start recording' })).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Allow microphone' })).toBeNull();
+  });
+
   it('shows the permission-denied state with a real retry path', async () => {
     renderRecite(new FakeAudioRecorder('denied'));
     fireEvent.press(screen.getByRole('button', { name: 'Allow microphone' }));
@@ -40,7 +46,7 @@ describe('Recite — the canonical recorder state machine wired to real capture'
   });
 
   it('pause and resume work mid-recording without losing the session', async () => {
-    renderRecite();
+    renderRecite(new FakeAudioRecorder('undetermined'));
     fireEvent.press(screen.getByRole('button', { name: 'Allow microphone' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start recording' })).toBeTruthy());
     fireEvent.press(screen.getByRole('button', { name: 'Start recording' }));
@@ -52,7 +58,7 @@ describe('Recite — the canonical recorder state machine wired to real capture'
   });
 
   it('discarding from reviewLocal clears the local file and returns to ready', async () => {
-    renderRecite();
+    renderRecite(new FakeAudioRecorder('undetermined'));
     fireEvent.press(screen.getByRole('button', { name: 'Allow microphone' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start recording' })).toBeTruthy());
     fireEvent.press(screen.getByRole('button', { name: 'Start recording' }));

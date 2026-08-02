@@ -8,6 +8,10 @@
  */
 export type AudioRecorder = {
   requestPermission(): Promise<'granted' | 'denied'>;
+  /** Reads the current OS permission grant without prompting — lets the UI
+   * skip the "Allow microphone" screen on repeat visits once the user has
+   * already granted it once, instead of asking again every time. */
+  getPermissionStatus(): Promise<'granted' | 'denied' | 'undetermined'>;
   startRecording(): Promise<void>;
   pauseRecording(): Promise<void>;
   resumeRecording(): Promise<void>;
@@ -21,9 +25,15 @@ export type AudioRecorder = {
 
 export class FakeAudioRecorder implements AudioRecorder {
   private fileCounter = 0;
-  constructor(private readonly permissionResult: 'granted' | 'denied' = 'granted') {}
+  constructor(
+    private readonly permissionResult: 'granted' | 'denied' | 'undetermined' = 'granted',
+  ) {}
 
   async requestPermission(): Promise<'granted' | 'denied'> {
+    return this.permissionResult === 'denied' ? 'denied' : 'granted';
+  }
+
+  async getPermissionStatus(): Promise<'granted' | 'denied' | 'undetermined'> {
     return this.permissionResult;
   }
 

@@ -1,6 +1,8 @@
 import {
   AudioModule,
+  PermissionStatus,
   RecordingPresets,
+  getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   type AudioRecorder as NativeAudioRecorderType,
@@ -51,6 +53,18 @@ export class ExpoAudioRecorder implements AudioRecorder {
     return result.granted ? 'granted' : 'denied';
   }
 
+  async getPermissionStatus(): Promise<'granted' | 'denied' | 'undetermined'> {
+    const result = await getRecordingPermissionsAsync();
+    switch (result.status) {
+      case PermissionStatus.GRANTED:
+        return 'granted';
+      case PermissionStatus.DENIED:
+        return 'denied';
+      default:
+        return 'undetermined';
+    }
+  }
+
   async startRecording(): Promise<void> {
     await setAudioModeAsync({ allowsRecording: true });
     const recorder = new AudioModule.AudioRecorder(flattenRecordingOptions(BASE_OPTIONS));
@@ -72,7 +86,14 @@ export class ExpoAudioRecorder implements AudioRecorder {
     await this.recorder.stop();
     const uri = this.recorder.uri;
     if (!uri) throw new Error('Recorder stopped without producing a file URI');
-    return uri;
+    // expo-audio's native `uri` on Android is a bare filesystem path (e.g.
+    // "/data/user/0/.../recording-<uuid>.m4a"), not a file:// URI.
+    // expo-file-system's getInfoAsync only auto-prefixes strings that
+    // already start with "file:" — a scheme-less path falls through to its
+    // Android-resource-lookup branch and reports the real file as
+    // non-existent. Normalize once here so every downstream consumer
+    // (getInfoAsync, fetch().blob(), deleteAsync) gets a real file:// URI.
+    return uri.startsWith('file://') ? uri : `file://${uri}`;
   }
 
   async discardRecording(localUri: string): Promise<void> {

@@ -43,11 +43,26 @@ export function Recite({ audioRecorder, onReadyToUpload }: ReciteProps): JSX.Ele
       setContext(snapshot.context);
     });
     actor.start();
+
+    // Skip the "Allow microphone" screen when the OS permission was already
+    // granted on a previous visit — without this, every remount re-asks the
+    // user even though the platform itself won't show a second native
+    // dialog, which reads as the app "asking again" for no reason.
+    let cancelled = false;
+    void (async () => {
+      const status = await audioRecorder.getPermissionStatus();
+      if (!cancelled && status === 'granted') {
+        actor.send({ type: 'REQUEST_PERMISSION' });
+        actor.send({ type: 'PERMISSION_GRANTED' });
+      }
+    })();
+
     return () => {
+      cancelled = true;
       subscription.unsubscribe();
       actor.stop();
     };
-  }, []);
+  }, [audioRecorder]);
 
   async function handleRequestPermission() {
     actorRef.current?.send({ type: 'REQUEST_PERMISSION' });
