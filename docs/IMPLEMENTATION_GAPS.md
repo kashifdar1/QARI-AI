@@ -799,3 +799,88 @@ re-run.
 - `FeedbackReport`'s "Failed to fetch feedback (404)" on a `failed`
   attempt should probably render a distinct "processing failed" state
   instead of the generic retry-404 `ErrorState`.
+
+## 12. Closed both §11 follow-ups: `OBJECT_STORAGE_ENDPOINT` split and the `failed`-attempt 404 UX (2026-08-01, session 5 continued)
+
+Same session, continued after §11 — the user chose to close out both
+smaller follow-up items now rather than go straight at the AAC transcode.
+
+**`OBJECT_STORAGE_ENDPOINT`'s dual internal/public role — real fix, not
+the LAN-IP workaround from §11:**
+- Added `OBJECT_STORAGE_PUBLIC_ENDPOINT` (optional, `packages/config/src/
+  env.ts`) — the host baked into URLs handed to clients (presigned
+  uploads, reference audio), distinct from `OBJECT_STORAGE_ENDPOINT` (the
+  server/worker's own direct S3 SDK calls). Falls back to
+  `OBJECT_STORAGE_ENDPOINT` when unset, so every environment except
+  local-emulator dev is unaffected.
+- `S3ObjectStorage` (`services/api/src/attempts/objectStorage.ts`) now
+  builds a second `S3Client` (`presignClient`) when a `publicEndpoint` is
+  configured, and `createSignedUploadUrl` signs against that client
+  instead of the internal one. Presigning is a local, offline signature
+  computation — no network call happens on this second client, so this is
+  the standard AWS SDK v3 pattern for making the presigner emit a
+  different host than the one the server itself talks to.
+- `server.ts` and `worker.ts` both now compute
+  `env.OBJECT_STORAGE_PUBLIC_ENDPOINT ?? env.OBJECT_STORAGE_ENDPOINT` once
+  and use it for `publicObjectBaseUrl` (reference-audio URLs) too — that
+  string was quietly built from the plain internal endpoint before, which
+  means "tap to hear reference audio" had the *exact same*
+  localhost-unreachable-from-emulator bug as the upload URL; nobody had
+  hit it yet only because no session had gotten far enough to test
+  playback on the emulator. Same root cause, same fix, closed in the same
+  pass.
+- This machine's `services/api/.env.development` now reads
+  `OBJECT_STORAGE_ENDPOINT=http://localhost:9000` (reverted to the
+  correct, fast, canonical value — no reason for the server's own calls
+  to go through the LAN IP) plus
+  `OBJECT_STORAGE_PUBLIC_ENDPOINT=http://10.0.2.2:9000` (the standard,
+  stable Android-emulator-to-host alias — no longer DHCP-fragile like the
+  §11 LAN-IP workaround it replaces).
+- `services/api` and `packages/config`: typecheck clean, lint clean,
+  102/102 tests passing (98 + 4 in `packages/config`, one new test added
+  for the optional var parsing correctly and defaulting to `undefined`).
+  `packages/config` needed a `tsc` rebuild for `services/api`'s typecheck
+  to see the new field — it consumes `packages/config`'s compiled `dist/`,
+  not source directly; a stale build produced a confusing "property does
+  not exist" error before rebuilding.
+
+**`FeedbackReport`'s 404-on-`failed`-attempt — real fix:**
+- `Processing`'s `onDone` callback already received the real terminal
+  status (`'completed' | 'needs_rerecord' | 'failed'`) but
+  `AppNavigator.tsx` discarded it and always transitioned to the
+  `feedback` state, which unconditionally calls `GET /v1/attempts/:id/
+  feedback` — a genuine 404 for `failed` attempts (no report was ever
+  generated), surfaced to the user as a confusing "Retry / Failed to fetch
+  feedback (404)" screen.
+- Added a new `processingFailed` branch to `AppNavigator`'s `PracticeState`
+  union. `onDone` now branches on the actual status: `'failed'` goes to
+  the new state (a dedicated `ErrorState`: "Processing failed — We
+  couldn't evaluate this recording. Please try recording again."),
+  `'completed'`/`'needs_rerecord'` still go to `feedback` as before (both
+  have a real report — `needs_rerecord` is the audio-quality-gate
+  rejection path, which does return a report body, per session 2's `curl`
+  walkthrough).
+- Deliberately did not add new fetch-mocked test coverage for this exact
+  branch in `AppNavigator.test.tsx` — that file has no fetch mocking for
+  *any* part of the upload/processing/feedback flow yet (a gap already
+  flagged in §8's "known gaps," unchanged since). Adding full mocking
+  infrastructure to cover one three-way branch was judged disproportionate
+  to this fix; verified instead via `tsc`/`eslint`/the existing 47-test
+  suite (no regressions) plus live confirmation on the emulator, which is
+  how this exact file's behavior has been validated every session so far.
+  Building out real `AppNavigator` fetch-mock coverage remains open,
+  unchanged from §8.
+- Verified live end-to-end on `qari_test`: recorded → uploaded (both §11
+  fixes still holding) → worker picked up the job → inference rejected the
+  AAC audio exactly as before (identical `Format not recognised` error,
+  confirming this is still the known ADR-007 wall, not a new regression)
+  → app now shows "Processing failed / We couldn't evaluate this
+  recording. Please try recording again." instead of the old retry-404
+  screen.
+- `apps/mobile`: typecheck clean, lint clean, 47/47 tests passing (no
+  change in count — no new tests added, per the coverage decision above).
+
+**Net effect:** all three items from §11's "unresolved" list are now
+closed except the AAC transcode itself, which remains the real blocker to
+a genuine `completed` evaluation and is out of scope for a quick pass
+(native module work, ADR-007).

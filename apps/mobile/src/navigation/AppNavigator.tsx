@@ -56,6 +56,7 @@ type PracticeState =
   | { status: 'uploading' }
   | { status: 'uploadError'; message: string }
   | { status: 'processing'; attemptId: string }
+  | { status: 'processingFailed'; attemptId: string }
   | { status: 'feedback'; attemptId: string };
 
 export function AppNavigator(): JSX.Element {
@@ -197,8 +198,30 @@ export function AppNavigator(): JSX.Element {
       <Processing
         attemptId={attemptId}
         attemptsClient={attemptsClient}
-        onDone={() => setPracticeState({ status: 'feedback', attemptId })}
+        onDone={(status) =>
+          setPracticeState(
+            // 'failed' means no report was ever generated (evaluation
+            // errored before completing, e.g. an undecodable recording) —
+            // going to FeedbackReport for it would just 404 on
+            // GET /v1/attempts/:id/feedback. 'completed' and
+            // 'needs_rerecord' both have a real report (the latter is the
+            // audio-quality-gate rejection path) and go there as before.
+            status === 'failed' ? { status: 'processingFailed', attemptId } : { status: 'feedback', attemptId },
+          )
+        }
         onCancel={() => setPracticeState({ status: 'closed' })}
+      />
+    );
+  }
+
+  if (selectedPassageId && practiceState.status === 'processingFailed') {
+    return (
+      <ErrorState
+        lang="en"
+        title="Processing failed"
+        description="We couldn't evaluate this recording. Please try recording again."
+        actionLabel="Back to passage"
+        onAction={() => setPracticeState({ status: 'closed' })}
       />
     );
   }

@@ -38,7 +38,7 @@ const objectStorageReader = new S3ObjectStorageReader({
   accessKeyId: env.OBJECT_STORAGE_ACCESS_KEY_ID,
   secretAccessKey: env.OBJECT_STORAGE_SECRET_ACCESS_KEY,
 });
-const publicObjectBaseUrl = `${env.OBJECT_STORAGE_ENDPOINT}/${env.OBJECT_STORAGE_BUCKET}`;
+const publicObjectBaseUrl = `${env.OBJECT_STORAGE_PUBLIC_ENDPOINT ?? env.OBJECT_STORAGE_ENDPOINT}/${env.OBJECT_STORAGE_BUCKET}`;
 
 async function handleJob(job: Job<EvaluationJobData>): Promise<void> {
   const { attemptId } = job.data;

@@ -8,6 +8,11 @@ export type ObjectStorage = {
 
 export type S3ObjectStorageConfig = {
   endpoint: string;
+  /** Host baked into presigned URLs handed back to clients. Defaults to
+   * `endpoint` — only pass this separately when the server and the client
+   * making the actual HTTP request can't reach the bucket at the same
+   * address (see OBJECT_STORAGE_PUBLIC_ENDPOINT in packages/config). */
+  publicEndpoint?: string;
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
@@ -21,19 +26,33 @@ export type S3ObjectStorageConfig = {
  */
 export class S3ObjectStorage implements ObjectStorage {
   private readonly client: S3Client;
+  /** Presigning is a local, offline signature computation (no network call),
+   * so a second client that only ever differs by `endpoint` is safe and is
+   * the standard way to make the AWS SDK v3 presigner emit a different host
+   * than the one the server itself talks to. */
+  private readonly presignClient: S3Client;
   private readonly bucket: string;
 
   constructor(config: S3ObjectStorageConfig) {
     this.bucket = config.bucket;
+    const credentials = {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+    };
     this.client = new S3Client({
       endpoint: config.endpoint,
       region: 'us-east-1',
       forcePathStyle: true,
-      credentials: {
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-      },
+      credentials,
     });
+    this.presignClient = config.publicEndpoint
+      ? new S3Client({
+          endpoint: config.publicEndpoint,
+          region: 'us-east-1',
+          forcePathStyle: true,
+          credentials,
+        })
+      : this.client;
   }
 
   async objectExists(objectKey: string): Promise<boolean> {
@@ -52,7 +71,7 @@ export class S3ObjectStorage implements ObjectStorage {
 
   async createSignedUploadUrl(objectKey: string, ttlSeconds: number): Promise<string> {
     const command = new PutObjectCommand({ Bucket: this.bucket, Key: objectKey });
-    return getSignedUrl(this.client, command, { expiresIn: ttlSeconds });
+    return getSignedUrl(this.presignClient, command, { expiresIn: ttlSeconds });
   }
 }
 

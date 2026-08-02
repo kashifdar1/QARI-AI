@@ -14,8 +14,10 @@ import { DrizzleSessionRepository } from './sessions/drizzleSessionRepository.js
 
 const env = parseApiEnv(process.env);
 const db = createDb(env.DATABASE_URL);
+const publicObjectEndpoint = env.OBJECT_STORAGE_PUBLIC_ENDPOINT ?? env.OBJECT_STORAGE_ENDPOINT;
 const objectStorageConfig = {
   endpoint: env.OBJECT_STORAGE_ENDPOINT,
+  publicEndpoint: publicObjectEndpoint,
   bucket: env.OBJECT_STORAGE_BUCKET,
   accessKeyId: env.OBJECT_STORAGE_ACCESS_KEY_ID,
   secretAccessKey: env.OBJECT_STORAGE_SECRET_ACCESS_KEY,
@@ -32,7 +34,7 @@ const app = buildApp({
   sessionRepository: new DrizzleSessionRepository(db),
   evaluationResultRepository: new DrizzleEvaluationResultRepository(db),
   reportRepository: new DrizzleReportRepository(db),
-  publicObjectBaseUrl: `${env.OBJECT_STORAGE_ENDPOINT}/${env.OBJECT_STORAGE_BUCKET}`,
+  publicObjectBaseUrl: `${publicObjectEndpoint}/${env.OBJECT_STORAGE_BUCKET}`,
   signedUrlTtlSeconds: env.SIGNED_URL_TTL_SECONDS,
 });
 

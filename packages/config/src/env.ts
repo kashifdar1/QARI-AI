@@ -10,6 +10,15 @@ export const apiEnvSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   OBJECT_STORAGE_ENDPOINT: z.string().url(),
+  /** Host used for URLs handed to clients (presigned uploads, reference
+   * audio) — distinct from OBJECT_STORAGE_ENDPOINT, which the server/worker
+   * use for their own direct S3 SDK calls. Needed whenever the two aren't
+   * reachable at the same address, e.g. local dev against an Android
+   * emulator, which can't resolve the host's "localhost". Falls back to
+   * OBJECT_STORAGE_ENDPOINT when unset, which is correct in every
+   * environment where server and client share a reachable host (staging,
+   * production, iOS simulator, physical-device-on-same-LAN dev). */
+  OBJECT_STORAGE_PUBLIC_ENDPOINT: z.string().url().optional(),
   OBJECT_STORAGE_BUCKET: z.string().min(1),
   OBJECT_STORAGE_ACCESS_KEY_ID: z.string().min(1),
   OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().min(1),
