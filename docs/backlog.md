@@ -87,6 +87,20 @@ Verified Quran content import, versioning, passage browser.
 - Reciter audio playback works end-to-end with a verified, recorded license
   reference. — CONTENT-004
 
+**Deferred, not yet scoped to an acceptance criterion — raised during
+real-device pipeline verification (2026-08-03):** the current MVP passage
+set (`mvpPassageSeed.ts`) only seeds 23 surahs — Al-Fatiha (1) plus Juz
+'Amma's short surahs (93-114). Surahs 2-92 are not imported as passages at
+all, though their Uthmani text already exists in
+`content-import/sources/tanzil-uthmani-v1.1.txt` (only the passage-seeding
+step is missing, not the source data). Proposed direction: an explicit
+onboarding/path choice — "Short Surahs" (today's MVP set, good for
+beginners/children) vs. "Regular Path" (full 114-surah coverage) — rather
+than silently expanding the MVP set. Needs its own scoping pass (which
+milestone, whether it needs a new `PassagePath`-type concept in the domain
+model or is purely a content-seeding + UI grouping change) before work
+starts.
+
 ---
 
 ## Milestone C — Vertical Slice
