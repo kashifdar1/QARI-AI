@@ -1,6 +1,6 @@
 import torch
 
-from app.deviation import generate_issue_candidates, greedy_ctc_decode
+from app.deviation import generate_issue_candidates, greedy_ctc_decode_chars
 from app.word_alignment import WordAlignment
 
 BLANK, PIPE, A, B, C, X = 0, 1, 2, 3, 4, 5
@@ -18,14 +18,14 @@ def word(index: int, text: str, avg_log_prob: float = -0.1) -> WordAlignment:
     return WordAlignment(word_index=index, display_text=text, start_ms=index * 100, end_ms=index * 100 + 90, avg_log_prob=avg_log_prob)
 
 
-def test_greedy_ctc_decode_collapses_repeats_and_splits_on_word_boundary():
+def test_greedy_ctc_decode_chars_collapses_repeats():
     log_probs = logits_for_ids([A, A, PIPE, B])
-    assert greedy_ctc_decode(log_probs, ID_TO_CHAR) == ["a", "b"]
+    assert greedy_ctc_decode_chars(log_probs, ID_TO_CHAR) == ["a", "|", "b"]
 
 
-def test_greedy_ctc_decode_drops_blanks():
+def test_greedy_ctc_decode_chars_drops_blanks():
     log_probs = logits_for_ids([BLANK, A, BLANK, PIPE, BLANK, B, BLANK])
-    assert greedy_ctc_decode(log_probs, ID_TO_CHAR) == ["a", "b"]
+    assert greedy_ctc_decode_chars(log_probs, ID_TO_CHAR) == ["a", "|", "b"]
 
 
 def test_clean_match_yields_no_candidates():
@@ -76,3 +76,18 @@ def test_model_confidence_is_between_0_and_1():
     candidates = generate_issue_candidates(words, log_probs, ID_TO_CHAR)
     for c in candidates:
         assert 0.0 < c.model_confidence <= 1.0
+
+
+def test_missing_boundary_token_does_not_falsely_flag_every_word():
+    # Regression test for a real bug found verifying against real device
+    # audio: continuous, pause-free recitation makes the free decode never
+    # predict the '|' boundary symbol at all. The old word-level diff split
+    # on that symbol, so a decode with none collapsed the whole utterance
+    # into one "word" and flagged every target word as a substitution even
+    # though the content was correct. Diffing at the character level (and
+    # taking word ownership from the KNOWN target, not the free decode)
+    # must not repeat that failure.
+    words = [word(0, "a"), word(1, "b")]
+    log_probs = logits_for_ids([A, B])  # correct content, no boundary symbol anywhere
+    candidates = generate_issue_candidates(words, log_probs, ID_TO_CHAR)
+    assert candidates == []

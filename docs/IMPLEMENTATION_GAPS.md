@@ -1083,3 +1083,58 @@ recording, or the "file no longer exists" upload-failure branch now that
 `getInfoAsync` is mockable — all reachable extensions of this same
 fixture, left for whenever they're actually needed rather than added
 speculatively.
+
+## 15. First real-device recitation reached a genuine `completed` evaluation; found and fixed a real deviation-detection bug along the way (2026-08-03, session 7)
+
+With the physical Android device connected (§13), tried Al-Fatiha
+(1:1-7) first: a 5.12s recording against a 29-word/7-ayah target produced
+degenerate all-`[0,0]`-timing alignment. Root cause: the recording was too
+short to contain the full passage at natural pace, not a code bug — full
+Al-Fatiha takes 15-30+ seconds. Moved to a shorter surah instead of
+diagnosing further, since a duration mismatch isn't fixable in code.
+
+Al-Ikhlas (112:1-4, 19 words) at 14.24s passed the audio quality gate and
+produced genuine, non-degenerate forced-alignment word timings correctly
+spread across the full recording, proving the capture → upload → queue →
+decode → forced-alignment path is healthy end-to-end on real audio. But
+every one of the 19 words was flagged as a deviation candidate regardless
+of content, and the app correctly abstained ("We weren't confident enough
+to flag anything specific") rather than show any of them.
+
+Root-caused and fixed in `app/deviation.py`
+(`docs/adr/009-deviation-char-level-diff.md` is the durable record — read
+that first, not this summary, if picking this up again): the free/
+unconstrained CTC decode used to detect deviations never predicted the
+model's `|` word-boundary symbol for this continuous, pause-free
+recitation, so the old word-level diff split the whole utterance into one
+"word" and flagged all 19 target words as substitutions by construction.
+Fixed by diffing at the character level instead, with word ownership taken
+from the KNOWN target (not the free decode) — removes the dependency on
+the model ever emitting an explicit boundary. Added a regression test
+(`test_missing_boundary_token_does_not_falsely_flag_every_word`); all 28
+`services/inference` tests pass.
+
+Re-verifying against the same real recording after the fix still flagged
+all 19 words — but for a different, deeper reason this time, confirmed by
+inspecting the actual character-level diff: the free decode only overlaps
+the target text by ~18% (a handful of short recognized fragments, e.g.
+"قُل"), despite high (~0.97 mean) frame-level model confidence. This is
+consistent with the model checkpoint
+(`HamzaSidhu786/wav2vec2-base-word-by-word-quran-asr`) being fine-tuned for
+word-level *forced* alignment rather than open transcription — exactly the
+distinction CLAUDE.md §3 already draws. Forced alignment (used for word
+timings) is unaffected; only the free decode used for deviation candidates
+is weak. **Not fixed this session** — this is Milestone H golden-corpus
+calibration scope (per CLAUDE.md §4), and the existing safety nets
+(low-confidence abstain + `ALL_LABELS_DISABLED` default) already prevent
+this weak signal from reaching any user as a false accusation, so nothing
+unsafe is live today.
+
+**Net result:** the last milestone-relevant gap from §13
+("proving a genuine `completed` evaluation with real word-level feedback
+needs actual recitation audio") is closed — pipeline verified end-to-end
+on real device audio with sensible timings — but a new, correctly-scoped
+Milestone H item is now documented: the free-decode-based deviation signal
+needs real calibration work (better decoding strategy, a checkpoint suited
+to open decoding, or a redesign of the signal to not need a free decode at
+all) before any issue label can be safely enabled.
